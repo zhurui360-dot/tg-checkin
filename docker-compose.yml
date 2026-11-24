@@ -10,6 +10,11 @@ services:
       TZ: ${TZ:-Asia/Shanghai}
       DATA_DIR: /app/data
       PUBLIC_URL: ${PUBLIC_URL:-}
+      # AI 机器人可选初始值，留空则用面板里配置的值
+      BOT_TOKEN: ${BOT_TOKEN:-}
+      AI_BASE_URL: ${AI_BASE_URL:-}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-}
     ports:
       - "${PANEL_PORT:-8000}:8000"
     volumes:

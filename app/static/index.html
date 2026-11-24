@@ -31,6 +31,7 @@
     <nav class="nav">
       <button class="nav-item active" data-tab="dashboard"><span class="dot"></span>概览</button>
       <button class="nav-item" data-tab="groups"><span class="dot"></span>群组管理</button>
+      <button class="nav-item" data-tab="bot"><span class="dot"></span>AI 机器人</button>
       <button class="nav-item" data-tab="account"><span class="dot"></span>账号与登录</button>
       <button class="nav-item" data-tab="settings"><span class="dot"></span>系统设置</button>
       <button class="nav-item" data-tab="logs"><span class="dot"></span>运行日志</button>
@@ -182,6 +183,81 @@
         <div class="notice wide">
           <strong>提示</strong>
           <p>cron 为 5 段格式：分 时 日 月 周。随机延迟会在每次发送前增加 0 到设定值之间的等待，降低固定时间点的机械特征。模拟运行适合先验证连接和群组是否正确。</p>
+        </div>
+      </section>
+
+      <!-- AI 聊天机器人 -->
+      <section id="tab-bot" class="tab-panel">
+        <div class="card">
+          <div class="card-head">
+            <h3>机器人状态</h3>
+            <button id="botRestartBtn" class="btn ghost small">重启轮询</button>
+          </div>
+          <div class="notice">
+            <strong>这个机器人不需要 api_id</strong>
+            <p>它走 Bot API，只用 BotFather 给的 token。注意：机器人发消息不等于你本人签到，签到功能仍需在「账号与登录」里配置。</p>
+          </div>
+          <p id="botStatusText" class="muted" style="margin-top:12px">加载中…</p>
+        </div>
+
+        <div class="card">
+          <h3>接入机器人</h3>
+          <ol class="muted" style="line-height:1.9;padding-left:18px;margin:10px 0 16px">
+            <li>在 Telegram 搜索 <strong>@BotFather</strong>，发送 <code>/newbot</code></li>
+            <li>按提示起名字和用户名（用户名必须以 bot 结尾）</li>
+            <li>把 BotFather 返回的 token 粘到下面，点「校验并保存」</li>
+            <li>私聊里先给你的机器人发一句话，或在群里把它拉进去并给「读取消息」权限</li>
+          </ol>
+          <form id="botForm" class="form-grid">
+            <label class="field span-2"><span>Bot Token</span><input name="bot_token" placeholder="123456789:AAH...（留空表示不修改）"></label>
+            <label class="field"><span>触发方式</span>
+              <select name="bot_trigger">
+                <option value="mention">私聊 + 群里被 @ 或回复时（推荐）</option>
+                <option value="all">群内所有消息都回</option>
+                <option value="private">只回私聊</option>
+              </select>
+            </label>
+            <label class="field"><span>启用</span>
+              <select name="bot_enabled"><option value="0">关闭</option><option value="1">开启</option></select>
+            </label>
+            <div class="span-2 form-actions">
+              <button type="button" class="btn primary" id="botVerifyBtn">校验并保存 Token</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="card">
+          <h3>AI 模型设置</h3>
+          <p class="muted" style="margin:8px 0 16px">支持任何兼容 OpenAI <code>/chat/completions</code> 协议的服务：DeepSeek、硅基流动、Kimi、通义、one-api 中转等。base_url 填到 <code>/v1</code> 为止。</p>
+          <form id="aiForm" class="form-grid">
+            <label class="field span-2"><span>接口地址（base_url）</span><input name="ai_base_url" placeholder="https://api.deepseek.com/v1"></label>
+            <label class="field"><span>模型名</span><input name="ai_model" placeholder="deepseek-chat"></label>
+            <label class="field"><span>API Key</span><input name="ai_api_key" type="password" placeholder="留空表示不修改"></label>
+            <label class="field span-2"><span>人设 / 系统提示词</span><textarea name="ai_system_prompt" rows="3" placeholder="你是一个在 Telegram 群里聊天的助手…"></textarea></label>
+            <label class="field"><span>上下文条数</span><input name="ai_history_len" type="number" min="0" max="40" placeholder="12"></label>
+            <label class="field"><span>最大回复长度</span><input name="ai_max_tokens" type="number" min="64" max="4096" placeholder="800"></label>
+            <label class="field"><span>温度（0-2）</span><input name="ai_temperature" type="number" step="0.1" min="0" max="2" placeholder="0.7"></label>
+            <label class="field"><span>最短回复间隔（秒）</span><input name="ai_min_interval" type="number" step="1" min="0" max="60" placeholder="3"></label>
+            <div class="span-2 form-actions">
+              <button type="submit" class="btn primary">保存 AI 设置</button>
+              <button type="button" class="btn" id="aiTestBtn">测试 AI 连通性</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>对话记录</h3>
+            <div class="filter-bar">
+              <button id="botClearMsgBtn" class="btn ghost small">清空记录</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>时间</th><th>会话</th><th>角色</th><th>内容</th></tr></thead>
+              <tbody id="botMsgBody"></tbody>
+            </table>
+          </div>
         </div>
       </section>
 

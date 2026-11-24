@@ -33,6 +33,20 @@ DEFAULTS: dict[str, str] = {
     "keepalive_interval": "300",
     "keepalive_url": os.getenv("PUBLIC_URL", "").strip(),
     "panel_password": os.getenv("PANEL_PASSWORD", "admin123"),
+    # ---------- AI 聊天机器人 ----------
+    "bot_enabled": "1" if os.getenv("BOT_TOKEN", "").strip() else "0",
+    "bot_token": os.getenv("BOT_TOKEN", "").strip(),
+    "bot_username": "",
+    "bot_trigger": "mention",
+    "bot_update_offset": "0",
+    "ai_base_url": os.getenv("AI_BASE_URL", "").strip() or "https://api.deepseek.com/v1",
+    "ai_api_key": os.getenv("AI_API_KEY", "").strip(),
+    "ai_model": os.getenv("AI_MODEL", "").strip() or "deepseek-chat",
+    "ai_system_prompt": "你是一个在 Telegram 群里聊天的助手，回答简洁、口语化，用中文回复。不确定的事不要编造。",
+    "ai_history_len": "12",
+    "ai_max_tokens": "800",
+    "ai_temperature": "0.7",
+    "ai_min_interval": "3",
 }
 
 
@@ -81,6 +95,16 @@ def init_db() -> None:
                 duration   INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_logs_ts ON logs(ts DESC);
+            CREATE TABLE IF NOT EXISTS ai_messages (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id    TEXT NOT NULL,
+                chat_title TEXT NOT NULL DEFAULT '',
+                role       TEXT NOT NULL,
+                author     TEXT NOT NULL DEFAULT '',
+                content    TEXT NOT NULL,
+                ts         TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_ai_chat ON ai_messages(chat_id, id DESC);
             """
         )
         for key, value in DEFAULTS.items():
@@ -285,3 +309,61 @@ def stats() -> dict[str, int]:
         "today_failed": int(failed),
         "total_runs": int(total),
     }
+
+
+# ---------------- AI 对话记忆 ----------------
+
+def add_ai_message(
+    chat_id: str, chat_title: str, role: str, author: str, content: str
+) -> None:
+    with connection() as conn:
+        conn.execute(
+            "INSERT INTO ai_messages(chat_id, chat_title, role, author, content) "
+            "VALUES(?,?,?,?,?)",
+            (str(chat_id), chat_title[:120], role, author[:80], content[:4000]),
+        )
+        # 每个会话只保留最近 60 条，避免无限增长
+        conn.execute(
+            "DELETE FROM ai_messages WHERE chat_id=? AND id NOT IN "
+            "(SELECT id FROM ai_messages WHERE chat_id=? ORDER BY id DESC LIMIT 60)",
+            (str(chat_id), str(chat_id)),
+        )
+
+
+def ai_history(chat_id: str, limit: int = 12) -> list[dict[str, Any]]:
+    """取最近若干条对话，按时间正序返回，供拼接上下文。"""
+    limit = max(1, min(int(limit), 40))
+    with connection() as conn:
+        rows = conn.execute(
+            "SELECT role, author, content, ts FROM ai_messages "
+            "WHERE chat_id=? ORDER BY id DESC LIMIT ?",
+            (str(chat_id), limit),
+        ).fetchall()
+    return [dict(row) for row in reversed(rows)]
+
+
+def list_ai_messages(limit: int = 60) -> list[dict[str, Any]]:
+    limit = max(1, min(int(limit), 300))
+    with connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM ai_messages ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def clear_ai_messages() -> None:
+    with connection() as conn:
+        conn.execute("DELETE FROM ai_messages")
+
+
+def ai_stats() -> dict[str, int]:
+    with connection() as conn:
+        total = conn.execute("SELECT COUNT(*) AS n FROM ai_messages").fetchone()["n"]
+        today = conn.execute(
+            "SELECT COUNT(*) AS n FROM ai_messages "
+            "WHERE role='assistant' AND date(ts)=date('now','localtime')"
+        ).fetchone()["n"]
+        chats = conn.execute(
+            "SELECT COUNT(DISTINCT chat_id) AS n FROM ai_messages"
+        ).fetchone()["n"]
+    return {"total": int(total), "today": int(today), "chats": int(chats)}

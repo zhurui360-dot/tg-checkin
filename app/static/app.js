@@ -14,6 +14,7 @@
   const TITLES = {
     dashboard: ["概览", "自动签到任务运行状态一览"],
     groups: ["群组管理", "配置需要签到的群组、指令与执行时间"],
+    bot: ["AI 机器人", "接入 AI 陪聊机器人，私聊与群内被 @ 时自动回复"],
     account: ["账号与登录", "配置 Telegram API 凭据并完成账号登录"],
     settings: ["系统设置", "重试、通知、模拟运行等全局参数"],
     logs: ["运行日志", "查看每一次签到执行的结果与机器人回复"],
@@ -69,6 +70,10 @@
     });
     $("pageTitle").textContent = TITLES[tab][0];
     $("pageDesc").textContent = TITLES[tab][1];
+    if (tab === "bot") {
+      loadBotConfig();
+      loadBotMessages();
+    }
   }
 
   // ---------- 渲染 ----------
@@ -195,7 +200,95 @@
       ? `${info.last_ping} ${info.last_ok ? "成功" : "失败"}` + (info.last_status ? `（${info.last_status}）` : "")
       : "尚未执行";
     box.textContent = `${stateText} · 间隔 ${info.interval} 秒 · 目标 ${info.url} · 上次 ${lastText} · 成功 ${info.ok_count} 次` +
-      (info.fail_streak ? ` · 连续失败 ${info.fail_streak} 次` : "");
+      (info.fail_streak ? ` · 连续失败 ${info.fail_streak} 次` : "") +
+      "。注意：实例被平台停机后本进程的线程会一起停止，无法唤醒自己，" +
+      "真正防休眠请配置仓库里的外部定时任务（.github/workflows/keepalive.yml）。";
+  }
+
+  // ---------- AI 机器人 ----------
+
+  const TRIGGER_TEXT = {
+    mention: "私聊 + 群里被 @ 或回复时",
+    all: "群内所有消息都回",
+    private: "只回私聊",
+  };
+
+  function renderBot(info) {
+    const box = $("botStatusText");
+    if (box) {
+      if (!info) {
+        box.textContent = "加载中…";
+      } else if (!info.token_set) {
+        box.textContent = "还没配置 Bot Token。按下面步骤从 @BotFather 拿一个 token 填进来即可，不需要 api_id。";
+      } else if (!info.enabled) {
+        box.textContent = `已配置机器人 ${info.bot_username ? "@" + info.bot_username : ""}，但当前是关闭状态。把「启用」改成开启后会自动开始接收消息。`;
+      } else {
+        const run = info.running ? "轮询运行中" : "轮询未运行";
+        const err = info.last_error ? ` · 最近错误：${info.last_error}` : "";
+        const poll = info.last_poll ? ` · 上次拉取 ${info.last_poll}` : "";
+        const st = info.stats || {};
+        box.textContent =
+          `${info.bot_name || info.bot_username || "机器人"} · ${run} · 触发：${TRIGGER_TEXT[info.trigger] || info.trigger}` +
+          ` · 模型 ${info.ai_model || "未设置"} · 已回复 ${info.replies} 条` +
+          ` · 今日 ${st.today || 0} 条 / 共 ${st.total || 0} 条 · ${st.chats || 0} 个会话` +
+          poll + err;
+      }
+    }
+    if (state.data && state.data.settings) {
+      const form = $("botForm");
+      if (form) {
+        form.elements.bot_trigger.value = state.data.settings.bot_trigger || "mention";
+        form.elements.bot_enabled.value = state.data.settings.bot_enabled || "0";
+      }
+    }
+  }
+
+  async function loadBotConfig() {
+    try {
+      const cfg = await api("/api/bot/config");
+      const form = $("aiForm");
+      if (!form) return;
+      ["ai_base_url", "ai_model", "ai_system_prompt", "ai_history_len",
+        "ai_max_tokens", "ai_temperature", "ai_min_interval"].forEach((key) => {
+        if (form.elements[key]) form.elements[key].value = cfg[key] ?? "";
+      });
+      if (form.elements.ai_api_key) {
+        form.elements.ai_api_key.value = "";
+        form.elements.ai_api_key.placeholder = cfg.ai_api_key_set
+          ? "已配置，留空表示不修改"
+          : "未配置，请填写 API Key";
+      }
+      const tokenInput = $("botForm")?.elements.bot_token;
+      if (tokenInput) {
+        tokenInput.value = "";
+        tokenInput.placeholder = cfg.bot_token
+          ? "已配置，留空表示不修改"
+          : "123456789:AAH...（在 @BotFather 获取）";
+      }
+    } catch (err) {
+      toast(err.message, "err");
+    }
+  }
+
+  async function loadBotMessages() {
+    try {
+      const data = await api("/api/bot/messages?limit=60");
+      const body = $("botMsgBody");
+      if (!body) return;
+      if (!data.messages || !data.messages.length) {
+        body.innerHTML = '<tr><td colspan="4" class="muted" style="text-align:center;padding:24px">还没有对话记录</td></tr>';
+        return;
+      }
+      body.innerHTML = data.messages.map((m) => `
+        <tr>
+          <td class="mono">${esc(m.ts)}</td>
+          <td>${esc(m.chat_title || m.chat_id)}</td>
+          <td><span class="badge ${m.role === "assistant" ? "ok" : ""}">${m.role === "assistant" ? "机器人" : esc(m.author || "用户")}</span></td>
+          <td class="wrap">${esc(m.content)}</td>
+        </tr>`).join("");
+    } catch (err) {
+      toast(err.message, "err");
+    }
   }
 
   function renderAll(data) {
@@ -205,6 +298,7 @@
     renderLogs(data);
     fillSettings(data);
     renderKeepalive(data.keepalive);
+    renderBot(data.bot);
     ensureCredentials();
   }
 
@@ -435,6 +529,90 @@
         link.click();
         URL.revokeObjectURL(url);
         toast("已导出配置文件，请妥善保管：内含 Telegram 登录会话", "ok");
+      } catch (err) { toast(err.message, "err"); }
+    });
+
+    // ---------- AI 机器人事件 ----------
+
+    $("botVerifyBtn").addEventListener("click", async () => {
+      const btn = $("botVerifyBtn");
+      const token = $("botForm").elements.bot_token.value.trim();
+      btn.disabled = true;
+      btn.textContent = "校验中…";
+      try {
+        const info = await api("/api/bot/verify", { method: "POST", body: { token } });
+        toast(`校验通过：${info.name}${info.username ? "（@" + info.username + "）" : ""}`, "ok");
+        await loadBootstrap();
+        await loadBotConfig();
+      } catch (err) {
+        toast(err.message, "err");
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "校验并保存 Token";
+      }
+    });
+
+    $("botForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const form = e.currentTarget;
+      try {
+        await api("/api/settings", {
+          method: "PUT",
+          body: {
+            bot_trigger: form.elements.bot_trigger.value,
+            bot_enabled: form.elements.bot_enabled.value,
+          },
+        });
+        toast("机器人设置已保存", "ok");
+        await loadBootstrap();
+      } catch (err) { toast(err.message, "err"); }
+    });
+
+    $("botRestartBtn").addEventListener("click", async () => {
+      try {
+        const info = await api("/api/bot/restart", { method: "POST" });
+        renderBot(info);
+        toast(info.running ? "轮询已重启" : "轮询已停止（未配置 token 或未启用）", info.running ? "ok" : "");
+      } catch (err) { toast(err.message, "err"); }
+    });
+
+    $("aiForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const form = e.currentTarget;
+      const payload = {};
+      ["ai_base_url", "ai_model", "ai_api_key", "ai_system_prompt", "ai_history_len",
+        "ai_max_tokens", "ai_temperature", "ai_min_interval"].forEach((key) => {
+        payload[key] = form.elements[key].value.trim();
+      });
+      try {
+        await api("/api/settings", { method: "PUT", body: payload });
+        toast("AI 设置已保存", "ok");
+        await loadBootstrap();
+        await loadBotConfig();
+      } catch (err) { toast(err.message, "err"); }
+    });
+
+    $("aiTestBtn").addEventListener("click", async () => {
+      const btn = $("aiTestBtn");
+      btn.disabled = true;
+      btn.textContent = "测试中…";
+      try {
+        const result = await api("/api/bot/test-ai", { method: "POST" });
+        toast(`AI 连通（${result.ms} ms）：${result.reply}`, "ok");
+      } catch (err) {
+        toast(err.message, "err");
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "测试 AI 连通性";
+      }
+    });
+
+    $("botClearMsgBtn").addEventListener("click", async () => {
+      if (!window.confirm("确定清空所有 AI 对话记录吗？这会同时清掉上下文记忆。")) return;
+      try {
+        await api("/api/bot/messages", { method: "DELETE" });
+        toast("对话记录已清空", "ok");
+        await loadBotMessages();
       } catch (err) { toast(err.message, "err"); }
     });
 

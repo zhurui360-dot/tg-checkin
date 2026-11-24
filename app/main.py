@@ -13,7 +13,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__, db, keepalive, scheduler, telegram
+from . import __version__, bot, db, keepalive, scheduler, telegram
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -30,8 +30,10 @@ async def lifespan(app: FastAPI):
     db.init_db()
     scheduler.start()
     keepalive.start()
+    bot.start()
     log.info("TG Checkin Panel %s 已启动", __version__)
     yield
+    bot.stop()
     keepalive.stop()
     scheduler.shutdown()
 
@@ -151,6 +153,7 @@ def bootstrap(_: None = Depends(require_auth)) -> dict[str, Any]:
             "phone": mask(settings.get("phone", ""), 3),
         },
         "keepalive": keepalive.status(),
+        "bot": bot.status(),
     }
 
 
@@ -262,7 +265,15 @@ SETTING_KEYS = {
     "api_id", "api_hash", "phone", "proxy_url", "timezone", "retry_count",
     "retry_delay", "jitter", "notify_chat", "fail_keywords", "dry_run",
     "panel_password", "keepalive_enabled", "keepalive_interval", "keepalive_url",
+    # AI 机器人
+    "bot_enabled", "bot_token", "bot_trigger",
+    "ai_base_url", "ai_api_key", "ai_model", "ai_system_prompt",
+    "ai_history_len", "ai_max_tokens", "ai_temperature", "ai_min_interval",
 }
+
+BOT_NUMERIC_KEYS = {"ai_history_len", "ai_max_tokens", "ai_temperature", "ai_min_interval"}
+# 留空表示不修改的字段（避免面板回填掩码后把真实值覆盖成星号）
+SECRET_KEYS = {"panel_password", "bot_token", "ai_api_key"}
 
 
 @app.put("/api/settings")
@@ -285,14 +296,25 @@ def update_settings(body: dict[str, Any], _: None = Depends(require_auth)) -> di
                     raise ValueError
             except ValueError:
                 raise HTTPException(status_code=400, detail=f"{key} 必须是非负数")
-        if key == "panel_password" and not value:
+        if key in BOT_NUMERIC_KEYS and value:
+            try:
+                number = float(value)
+                if number < 0:
+                    raise ValueError
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"{key} 必须是非负数")
+        if key in SECRET_KEYS and not value:
             continue  # 留空表示不修改
+        if key == "bot_trigger" and value not in ("mention", "all", "private"):
+            raise HTTPException(status_code=400, detail="bot_trigger 只能是 mention / all / private")
         db.set_setting(key, value)
         changed.add(key)
     if "timezone" in changed:
         scheduler.reload_jobs()
     if changed & {"keepalive_enabled", "keepalive_interval", "keepalive_url"}:
         keepalive.restart()
+    if changed & {"bot_enabled", "bot_token", "bot_trigger"}:
+        bot.restart()
     return {"ok": True}
 
 
@@ -316,12 +338,90 @@ def keepalive_ping_now(_: None = Depends(require_auth)) -> dict[str, Any]:
     return keepalive.ping_now()
 
 
+# ---------------- AI 聊天机器人 ----------------
+
+@app.get("/api/bot/status")
+def bot_status(_: None = Depends(require_auth)) -> dict[str, Any]:
+    return bot.status()
+
+
+@app.get("/api/bot/config")
+def bot_config(_: None = Depends(require_auth)) -> dict[str, Any]:
+    """面板表单回填用：返回原文，密钥除外。"""
+    settings = db.get_settings()
+    return {
+        "bot_token": settings.get("bot_token", ""),
+        "ai_base_url": settings.get("ai_base_url", ""),
+        "ai_model": settings.get("ai_model", ""),
+        "ai_api_key_set": bool(settings.get("ai_api_key", "")),
+        "ai_system_prompt": settings.get("ai_system_prompt", ""),
+        "ai_history_len": settings.get("ai_history_len", "12"),
+        "ai_max_tokens": settings.get("ai_max_tokens", "800"),
+        "ai_temperature": settings.get("ai_temperature", "0.7"),
+        "ai_min_interval": settings.get("ai_min_interval", "3"),
+    }
+
+
+@app.post("/api/bot/verify")
+def bot_verify(body: dict[str, Any], _: None = Depends(require_auth)) -> dict[str, Any]:
+    """校验 Bot Token，成功则保存。"""
+    token = str(body.get("token", "")).strip() or db.get_setting("bot_token", "")
+    try:
+        info = bot.verify_token(token)
+    except bot.BotError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    db.set_setting("bot_token", token)
+    bot.restart()
+    return info
+
+
+@app.post("/api/bot/test-ai")
+def bot_test_ai(_: None = Depends(require_auth)) -> dict[str, Any]:
+    try:
+        return bot.test_ai()
+    except bot.BotError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/bot/send")
+def bot_send(body: dict[str, Any], _: None = Depends(require_auth)) -> dict[str, Any]:
+    """从面板发一条测试消息到指定会话。"""
+    try:
+        return bot.send_test_message(
+            str(body.get("chat_id", "")), str(body.get("text", "测试消息")) or "测试消息"
+        )
+    except bot.BotError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/bot/messages")
+def bot_messages(
+    limit: int = Query(60), _: None = Depends(require_auth)
+) -> dict[str, Any]:
+    return {"messages": db.list_ai_messages(limit), "stats": db.ai_stats()}
+
+
+@app.delete("/api/bot/messages")
+def bot_messages_clear(_: None = Depends(require_auth)) -> dict[str, Any]:
+    db.clear_ai_messages()
+    return {"ok": True}
+
+
+@app.post("/api/bot/restart")
+def bot_restart(_: None = Depends(require_auth)) -> dict[str, Any]:
+    bot.restart()
+    return bot.status()
+
+
 # ---------------- 配置导出（用于无持久卷环境） ----------------
 
 EXPORT_KEYS = {
     "api_id", "api_hash", "phone", "proxy_url", "session_string", "account_name",
     "timezone", "retry_count", "retry_delay", "jitter", "notify_chat",
     "fail_keywords", "dry_run",
+    "bot_enabled", "bot_token", "bot_trigger", "ai_base_url", "ai_api_key",
+    "ai_model", "ai_system_prompt", "ai_history_len", "ai_max_tokens",
+    "ai_temperature", "ai_min_interval",
 }
 
 

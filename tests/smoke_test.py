@@ -72,4 +72,58 @@ with TestClient(app) as client:
     assert client.put("/api/settings", json={"keepalive_interval": "10"}).status_code == 200
     assert client.get("/api/keepalive").json()["interval"] == 60
 
-print("冒烟测试通过：健康检查、鉴权、群组 CRUD、cron 校验、设置保存、保活自检均正常")
+    # ---------- AI 机器人（不发真实网络请求，只验证配置与状态流转） ----------
+    bst = client.get("/api/bot/status").json()
+    assert "enabled" in bst and "running" in bst and "token_set" in bst, bst
+    assert bst["token_set"] is False
+
+    # 配置回填接口不应泄露 API Key，只给是否已配置
+    cfg = client.get("/api/bot/config").json()
+    assert cfg["ai_api_key_set"] is False and "ai_api_key" not in cfg
+
+    # 保存 AI 设置：数值校验与触发方式枚举
+    assert client.put("/api/settings", json={
+        "ai_base_url": "https://api.example.com/v1",
+        "ai_model": "test-model",
+        "ai_api_key": "sk-test",
+        "ai_history_len": "8",
+        "ai_temperature": "0.5",
+        "ai_min_interval": "2",
+        "bot_trigger": "mention",
+    }).status_code == 200
+    cfg2 = client.get("/api/bot/config").json()
+    assert cfg2["ai_base_url"] == "https://api.example.com/v1"
+    assert cfg2["ai_model"] == "test-model"
+    assert cfg2["ai_api_key_set"] is True
+
+    # 非法的触发方式与负数应被拒绝
+    assert client.put("/api/settings", json={"bot_trigger": "bogus"}).status_code == 400
+    assert client.put("/api/settings", json={"ai_history_len": "-1"}).status_code == 400
+
+    # 密钥留空表示不修改，不能被空值覆盖
+    assert client.put("/api/settings", json={"ai_api_key": "   "}).status_code == 200
+    assert client.get("/api/bot/config").json()["ai_api_key_set"] is True
+
+    # 无 token 时校验应给出明确 400，而不是 500
+    bad_verify = client.post("/api/bot/verify", json={"token": ""})
+    assert bad_verify.status_code == 400, bad_verify.text
+
+    # 对话记录接口可用，且能写入/清空
+    msgs = client.get("/api/bot/messages").json()
+    assert msgs["messages"] == [] and "stats" in msgs
+    from app import db as appdb  # noqa: E402
+    appdb.add_ai_message("1", "测试会话", "user", "我", "你好")
+    appdb.add_ai_message("1", "测试会话", "assistant", "bot", "你好呀")
+    hist = appdb.ai_history("1", 10)
+    assert [m["role"] for m in hist] == ["user", "assistant"], hist
+    assert client.get("/api/bot/messages").json()["stats"]["total"] == 2
+    assert client.delete("/api/bot/messages").status_code == 200
+    assert client.get("/api/bot/messages").json()["stats"]["total"] == 0
+
+    # 开启机器人后状态应反映 enabled，但无 token 时不进入轮询
+    assert client.put("/api/settings", json={"bot_enabled": "1"}).status_code == 200
+    bst2 = client.get("/api/bot/status").json()
+    assert bst2["enabled"] is True
+    assert bst2["running"] is False, bst2
+
+print("冒烟测试通过：健康检查、鉴权、群组 CRUD、cron 校验、设置保存、保活自检、AI 机器人配置均正常")
