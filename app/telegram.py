@@ -6,6 +6,7 @@ FastAPI 线程池和 APScheduler 线程里各自建客户端，容易出现事�
 from __future__ import annotations
 
 import asyncio
+import datetime
 import random
 import re
 import threading
@@ -13,6 +14,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, TypeVar
 
+# 必须导入 telethon.sync：它会把 TelegramClient 的公开方法改写成「自己跑事件循环」的
+# 同步版本。少了这一行，client.connect() / get_me() 只会返回协程而不执行，
+# 账号模式的登录、签到全部静默失效（历史上踩过这个坑）。
+import telethon.sync  # noqa: F401  isort:skip
 from telethon import TelegramClient, errors as tg_errors
 from telethon.sessions import StringSession
 
@@ -236,6 +241,224 @@ def login_verify(code: str, password: str = "") -> dict[str, Any]:
             return {"ok": True, "name": name, "message": f"登录成功：{name or 'Telegram 账号'}"}
 
     return run_tg(job)
+
+
+# ---------------- 二维码登录 ----------------
+# Telegram 的二维码登录：用 api_id/api_hash 调 auth.ExportLoginToken 拿一次性 token，
+# 手机端在已登录的 Telegram 里扫码后把授权导入这个 token，我们随即收到 UpdateLoginToken。
+# token 有效期约 30 秒，过期要重新生成，所以下面做成「专用线程 + 自动续期」：
+# Telethon 客户端绑定在创建它的事件循环上，跨线程调用会直接崩，因此连接、等待、
+# 两步验证密码全部在同一线程内完成，HTTP 接口只读写状态字典。
+_qr_lock = threading.RLock()
+_qr_state: dict[str, Any] = {}
+_qr_cancel = threading.Event()
+_qr_refresh_flag = threading.Event()
+_qr_password: dict[str, Any] = {"value": "", "event": threading.Event()}
+
+
+def qr_status() -> dict[str, Any]:
+    """当前二维码进度，面板轮询用。"""
+    with _qr_lock:
+        state = dict(_qr_state)
+    if not state:
+        return {"active": False, "status": "idle", "seconds_left": 0,
+                "messages_key": "", "message": "还没有生成二维码", "url": "", "svg": "", "name": ""}
+    expires = float(state.get("expires") or 0)
+    return {
+        "active": state.get("status") in ("waiting", "need_password"),
+        "status": state.get("status", "idle"),
+        "url": state.get("url", ""),
+        "svg": state.get("svg", ""),
+        "expires": expires,
+        "seconds_left": max(0, int(expires - time.time())) if expires else 0,
+        "message": state.get("message", ""),
+        "name": state.get("name", ""),
+    }
+
+
+def _qr_svg(url: str) -> str:
+    """把 tg://login?token=… 渲染成内联 SVG，面板直接插进 DOM 即可。"""
+    try:
+        import io
+
+        import qrcode
+        import qrcode.image.svg
+
+        image = qrcode.make(url, image_factory=qrcode.image.svg.SvgPathImage, box_size=10, border=2)
+        buffer = io.BytesIO()
+        image.save(buffer)
+        return buffer.getvalue().decode("utf-8")
+    except Exception:
+        return ""
+
+
+def _qr_update(**fields: Any) -> None:
+    with _qr_lock:
+        _qr_state.update(fields)
+
+
+def _qr_publish(qr: Any) -> None:
+    """刷新 url / svg / 过期时间。"""
+    expires = qr.expires
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=datetime.timezone.utc)
+    _qr_update(url=qr.url, svg=_qr_svg(qr.url), expires=expires.timestamp())
+
+
+def _qr_finish(client: Any, user: Any) -> None:
+    """把 session 落库，状态改成已登录。"""
+    name = " ".join(x for x in (getattr(user, "first_name", "") or "", getattr(user, "last_name", "") or "") if x)
+    db.set_setting("session_string", client.session.save())
+    if getattr(user, "phone", None):
+        db.set_setting("phone", user.phone)
+    db.set_setting("account_name", name)
+    _qr_update(status="authorized", name=name, message=f"登录成功：{name or 'Telegram 账号'}")
+
+
+def _qr_worker() -> None:
+    """后台线程：生成二维码 → 等扫码 → 需要的话补密码 → 落库。"""
+    loop = None
+    client = None
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        client = make_client("")
+        client.connect()
+        client.loop = loop  # 让 syncified 调用固定用这个循环
+        if client.is_user_authorized():
+            me = client.get_me()
+            _qr_finish(client, me)
+            _qr_update(message="这个会话已经登录过了，无需扫码")
+            return
+
+        qr = client.qr_login()
+        _qr_update(qr=qr, status="waiting", message="用手机 Telegram 扫一下上面的二维码")
+        _qr_publish(qr)
+
+        while not _qr_cancel.is_set():
+            if _qr_refresh_flag.is_set():
+                _qr_refresh_flag.clear()
+                loop.run_until_complete(qr.recreate())
+                _qr_publish(qr)
+                _qr_update(status="waiting", message="二维码已刷新，请重新扫码")
+                continue
+            remaining = float(_qr_state.get("expires") or 0) - time.time()
+            if remaining <= 1:
+                # token 过期，换一张（旧码作废，面板轮询会自动换成新的）
+                loop.run_until_complete(qr.recreate())
+                _qr_publish(qr)
+                continue
+            try:
+                user = loop.run_until_complete(qr.wait(timeout=remaining))
+            except asyncio.TimeoutError:
+                continue
+            except tg_errors.SessionPasswordNeededError:
+                _qr_update(
+                    status="need_password",
+                    message="该账号开启了两步验证，请输入验证密码",
+                )
+                _qr_password["event"].clear()
+                _qr_password["value"] = ""
+                # 最多等 5 分钟，期间接口会把密码塞进来
+                if not _qr_password["event"].wait(300):
+                    _qr_update(status="expired", message="等待验证密码超时，请重新生成二维码")
+                    return
+                password = str(_qr_password.get("value") or "")
+                if not password:
+                    _qr_update(status="expired", message="已取消登录")
+                    return
+                user = client.sign_in(password=password)
+                _qr_finish(client, user)
+                return
+            _qr_finish(client, user)
+            return
+
+        _qr_update(status="idle", message="已取消扫码登录")
+    except Exception as exc:
+        _qr_update(status="error", message=f"扫码登录失败：{friendly_error(exc)}")
+    finally:
+        if client is not None:
+            try:
+                client.disconnect()
+            except Exception:
+                pass
+        if loop is not None:
+            try:
+                loop.close()
+            except Exception:
+                pass
+
+
+def qr_start(api_id: str, api_hash: str, proxy_url: str = "") -> dict[str, Any]:
+    """生成登录二维码。顺手把 api_id / api_hash 存下来，后续签到直接用。"""
+    if not str(api_id).strip().isdigit():
+        raise RuntimeError("API ID 必须是纯数字")
+    if not str(api_hash).strip():
+        raise RuntimeError("请填写 API Hash")
+
+    db.set_setting("api_id", str(api_id).strip())
+    db.set_setting("api_hash", str(api_hash).strip())
+    db.set_setting("proxy_url", str(proxy_url or "").strip())
+
+    qr_cancel()  # 先清掉上一个（会等旧线程退出）
+    _qr_cancel.clear()
+    with _qr_lock:
+        _qr_state.clear()
+        _qr_state.update(status="starting", message="正在向 Telegram 申请二维码…", expires=0, url="", svg="")
+
+    thread = threading.Thread(target=_qr_worker, name="tg-qr", daemon=True)
+    thread.start()
+    with _qr_lock:
+        _qr_state["thread"] = thread
+
+    # 等一小会儿让第一张码出来，面板就能立刻渲染
+    for _ in range(30):
+        time.sleep(0.2)
+        if _qr_state.get("svg") or _qr_state.get("status") in ("authorized", "error"):
+            break
+    return qr_status()
+
+
+def qr_refresh() -> dict[str, Any]:
+    """换一张码。真正生成在扫码线程里做，这里只发信号，避免跨线程操作客户端。"""
+    with _qr_lock:
+        status = _qr_state.get("status")
+        qr = _qr_state.get("qr")
+    if qr is None or status in ("idle", "authorized", "error"):
+        raise RuntimeError("当前没有可刷新的二维码，请先点击生成")
+    _qr_refresh_flag.set()
+    return {"ok": True, "message": "正在刷新二维码…", **qr_status()}
+
+
+def qr_password_submit(password: str) -> dict[str, Any]:
+    """扫码通过但账号有两步验证时，把密码交给后台线程去完成登录。"""
+    password = str(password or "")
+    if not password:
+        raise RuntimeError("请输入两步验证密码")
+    with _qr_lock:
+        status = _qr_state.get("status")
+    if status != "need_password":
+        raise RuntimeError("当前没有等待验证密码的登录，请重新扫码")
+    _qr_password["value"] = password
+    _qr_password["event"].set()
+    return {"ok": True, "message": "已提交验证密码，正在登录…", **qr_status()}
+
+
+def qr_cancel() -> None:
+    """停掉扫码线程并释放客户端。"""
+    with _qr_lock:
+        thread = _qr_state.get("thread")
+    _qr_cancel.set()
+    _qr_refresh_flag.clear()
+    _qr_password["value"] = ""
+    _qr_password["event"].set()
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=12)
+    with _qr_lock:
+        _qr_state.clear()
+    _qr_password["event"].clear()
+    _qr_password["value"] = ""
 
 
 def login_cancel() -> None:

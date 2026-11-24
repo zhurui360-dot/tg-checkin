@@ -140,6 +140,7 @@ with TestClient(app) as client:
     assert isinstance(bst2.get("business"), list), bst2
     assert bst2.get("business_replies") == 0, bst2
     from app import bot as appbot  # noqa: E402
+    from app import telegram as apptg  # noqa: E402
     appdb.set_setting(
         "business_connections",
         '{"c1": {"owner_id": 999, "owner_name": "Owner", "is_enabled": true}}',
@@ -157,6 +158,7 @@ with TestClient(app) as client:
 
     # ---------- 群签到：默认走机器人（Bot API），不需要 api_id ----------
     from app import bot as appbot  # noqa: E402
+    from app import telegram as apptg  # noqa: E402
     assert appdb.get_setting("checkin_mode") == "bot"
     assert appbot.normalize_chat("-1001234567890") == -1001234567890
     assert appbot.normalize_chat("https://t.me/mygroup") == "@mygroup"
@@ -204,4 +206,17 @@ with TestClient(app) as client:
     assert client.delete(f"/api/groups/{g3}").status_code == 200
     assert client.put("/api/settings", json={"checkin_mode": "bot"}).status_code == 200
 
-print("冒烟测试通过：健康检查、鉴权、群组 CRUD、cron 校验、设置保存、保活自检、AI 机器人、机器人签到均正常")
+    # ---------- 扫码登录：接口形状与状态机 ----------
+    assert client.get("/api/tg/qr/status").json()["status"] == "idle"
+    # 没有 api_id 时不能生成
+    assert client.post("/api/tg/qr/start", json={"api_id": "", "api_hash": ""}).status_code == 400
+    # api_id 非数字同样拒绝
+    assert client.post("/api/tg/qr/start", json={"api_id": "abc", "api_hash": "x" * 32}).status_code == 400
+    # 没生成码时刷新/提交密码都要明确报错，而不是 500
+    assert client.post("/api/tg/qr/refresh").status_code == 400
+    assert client.post("/api/tg/qr/password", json={"password": "x"}).status_code == 400
+    assert client.post("/api/tg/qr/cancel").status_code == 200
+    # 二维码渲染（不联网，纯本地编码）
+    assert len(apptg._qr_svg("tg://login?token=ZA")) > 200
+
+print("冒烟测试通过：健康检查、鉴权、群组 CRUD、cron 校验、设置保存、保活自检、AI 机器人、机器人签到、扫码登录接口均正常")

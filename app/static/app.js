@@ -502,18 +502,124 @@
       } catch (err) { toast(err.message, "err"); }
     });
 
-    $("loginStartBtn").addEventListener("click", async () => {
+    function accountPayload() {
       const form = $("accountForm");
-      const payload = {
+      return {
         api_id: form.elements.api_id.value.trim(),
         api_hash: form.elements.api_hash.value.trim(),
         phone: form.elements.phone.value.trim(),
         proxy_url: form.elements.proxy_url.value.trim(),
       };
+    }
+
+    $("loginStartBtn").addEventListener("click", async () => {
+      const payload = accountPayload();
       try {
         const result = await api("/api/tg/login-start", { method: "POST", body: payload });
         toast(result.message, "ok");
         verifyCode("");
+      } catch (err) { toast(err.message, "err"); }
+    });
+
+    // ---------- 扫码登录 ----------
+    let qrTimer = null;
+
+    function stopQrPolling() {
+      if (qrTimer) { clearInterval(qrTimer); qrTimer = null; }
+    }
+
+    function renderQr(info) {
+      const card = $("qrCard");
+      const badge = $("qrBadge");
+      const tip = $("qrTip");
+      const pwdForm = $("qrPasswordForm");
+      if (!card) return;
+      card.hidden = false;
+      const statusText = {
+        starting: "正在申请",
+        waiting: "等待扫码",
+        need_password: "需要验证密码",
+        authorized: "登录成功",
+        expired: "已过期",
+        error: "出错",
+        idle: "已取消",
+      };
+      badge.textContent = statusText[info.status] || info.status || "等待扫码";
+      badge.className = "badge " + (info.status === "authorized" ? "ok" : info.status === "error" ? "err" : "warn");
+
+      if (info.svg) $("qrImage").innerHTML = info.svg;
+      else if (!info.svg && info.status === "starting") $("qrImage").innerHTML = '<span class="muted">正在申请二维码…</span>';
+
+      let text = info.message || "";
+      if (info.status === "waiting" && info.seconds_left > 0) {
+        text = `用手机 Telegram 扫码（剩余 ${info.seconds_left} 秒后自动换新码）。路径：设置 → 设备 → 连接设备。`;
+      }
+      tip.textContent = text;
+      pwdForm.hidden = info.status !== "need_password";
+
+      if (["authorized", "error", "expired", "idle"].includes(info.status)) {
+        stopQrPolling();
+      }
+      if (info.status === "authorized") {
+        toast(info.message || "扫码登录成功", "ok");
+        $("qrCard").hidden = true;
+        loadBootstrap();
+      }
+    }
+
+    async function pollQr() {
+      try {
+        const info = await api("/api/tg/qr/status");
+        renderQr(info);
+      } catch (err) {
+        stopQrPolling();
+      }
+    }
+
+    function startQrPolling() {
+      stopQrPolling();
+      qrTimer = setInterval(pollQr, 2000);
+    }
+
+    $("qrStartBtn").addEventListener("click", async () => {
+      const payload = accountPayload();
+      if (!payload.api_id || !payload.api_hash) {
+        toast("先填好 API ID 和 API Hash", "err");
+        return;
+      }
+      try {
+        const info = await api("/api/tg/qr/start", { method: "POST", body: {
+          api_id: payload.api_id, api_hash: payload.api_hash, proxy_url: payload.proxy_url,
+        }});
+        renderQr(info);
+        startQrPolling();
+        toast("二维码已生成，用手机 Telegram 扫一下", "ok");
+      } catch (err) { toast(err.message, "err"); }
+    });
+
+    $("qrRefreshBtn").addEventListener("click", async () => {
+      try {
+        await api("/api/tg/qr/refresh", { method: "POST" });
+        toast("正在刷新二维码", "ok");
+      } catch (err) { toast(err.message, "err"); }
+    });
+
+    $("qrCancelBtn").addEventListener("click", async () => {
+      try {
+        await api("/api/tg/qr/cancel", { method: "POST" });
+        stopQrPolling();
+        $("qrCard").hidden = true;
+        toast("已取消扫码登录", "ok");
+      } catch (err) { toast(err.message, "err"); }
+    });
+
+    $("qrPasswordForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const password = e.currentTarget.elements.password.value;
+      try {
+        const info = await api("/api/tg/qr/password", { method: "POST", body: { password } });
+        renderQr(info);
+        startQrPolling();
       } catch (err) { toast(err.message, "err"); }
     });
 

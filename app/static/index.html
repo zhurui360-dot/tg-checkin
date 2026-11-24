@@ -146,13 +146,35 @@
             <div id="accountInfo" class="muted">点击「检查登录状态」查看当前会话。</div>
             <div class="form-actions">
               <button id="checkAccountBtn" class="btn">检查登录状态</button>
-              <button id="loginStartBtn" class="btn primary">获取验证码并登录</button>
+              <button id="loginStartBtn" class="btn">用验证码登录</button>
+              <button id="qrStartBtn" class="btn primary">扫码登录</button>
               <button id="tgLogoutBtn" class="btn danger">退出 Telegram 账号</button>
             </div>
           </div>
           <div class="notice">
             <strong>登录说明</strong>
-            <p>点击「获取验证码并登录」后会向你的 Telegram 账号发送验证码（通常来自 Telegram 官方对话）。输入验证码即可；若账号开启两步验证，会继续要求输入验证密码。登录会话保存在容器数据目录中，重启不会丢失。</p>
+            <p>两种方式任选其一。扫码更省事：点「扫码登录」后出二维码，用手机 Telegram（设置 → 设备 → 连接设备，或直接扫）扫一下即可，不需要等短信。验证码方式则会在 Telegram 官方对话里收到一串码。若账号开启了两步验证，两者都会再要求输入验证密码。登录会话保存在容器数据目录中，重启不会丢失。</p>
+          </div>
+        </div>
+
+        <div class="card" id="qrCard" hidden>
+          <div class="card-head">
+            <h3>扫码登录</h3>
+            <span id="qrBadge" class="badge">等待扫码</span>
+          </div>
+          <div class="qr-box">
+            <div id="qrImage" class="qr-image"></div>
+            <div class="qr-side">
+              <p id="qrTip" class="muted">用手机 Telegram 扫左边的二维码。</p>
+              <div class="form-actions">
+                <button id="qrRefreshBtn" class="btn small">换一张</button>
+                <button id="qrCancelBtn" class="btn ghost small">取消</button>
+              </div>
+              <form id="qrPasswordForm" class="form-grid" hidden>
+                <label class="field span-2"><span>两步验证密码</span><input name="password" type="password" placeholder="账号开启了两步验证时填写"></label>
+                <button type="submit" class="btn primary small">提交密码</button>
+              </form>
+            </div>
           </div>
         </div>
       </section>

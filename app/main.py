@@ -487,6 +487,47 @@ def tg_login_verify(body: dict[str, Any], _: None = Depends(require_auth)) -> di
         raise HTTPException(status_code=400, detail=telegram.friendly_error(exc))
 
 
+# ---------------- 扫码登录 ----------------
+
+@app.post("/api/tg/qr/start")
+def tg_qr_start(body: dict[str, Any], _: None = Depends(require_auth)) -> dict[str, Any]:
+    try:
+        return telegram.qr_start(
+            api_id=str(body.get("api_id", "")),
+            api_hash=str(body.get("api_hash", "")),
+            proxy_url=str(body.get("proxy_url", "")),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=telegram.friendly_error(exc))
+
+
+@app.get("/api/tg/qr/status")
+def tg_qr_status(_: None = Depends(require_auth)) -> dict[str, Any]:
+    return telegram.qr_status()
+
+
+@app.post("/api/tg/qr/refresh")
+def tg_qr_refresh(_: None = Depends(require_auth)) -> dict[str, Any]:
+    try:
+        return telegram.qr_refresh()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=telegram.friendly_error(exc))
+
+
+@app.post("/api/tg/qr/password")
+def tg_qr_password(body: dict[str, Any], _: None = Depends(require_auth)) -> dict[str, Any]:
+    try:
+        return telegram.qr_password_submit(str(body.get("password", "")))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=telegram.friendly_error(exc))
+
+
+@app.post("/api/tg/qr/cancel")
+def tg_qr_cancel(_: None = Depends(require_auth)) -> dict[str, Any]:
+    telegram.qr_cancel()
+    return {"ok": True}
+
+
 @app.post("/api/tg/logout")
 def tg_logout(_: None = Depends(require_auth)) -> dict[str, Any]:
     telegram.logout()
