@@ -137,6 +137,8 @@
           </tr>`).join("")}</tbody></table>`
       : `<div class="empty">暂无运行记录</div>`;
 
+    const standbyBadge = $("standbyBadge");
+    if (standbyBadge) standbyBadge.hidden = !data.standby;
     const accounts = data.accounts || [];
     const authed = accounts.filter((a) => a.authorized).length;
     const badge = $("accountBadge");

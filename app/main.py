@@ -25,6 +25,11 @@ log = logging.getLogger("tg-checkin")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 COOKIE_NAME = "tgck_session"
 
+# 值守模式：同一套代码部署了多个实例时（比如主用 + 备用），
+# 备用实例设 STANDBY=1 就只开面板、不启动调度和机器人，
+# 否则两个进程会抢同一个 bot 的 getUpdates（Conflict）并重复签到。
+STANDBY = os.getenv("STANDBY", "").strip().lower() in ("1", "true", "yes", "on")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -34,18 +39,22 @@ async def lifespan(app: FastAPI):
         backup.auto_restore_on_boot()
     except Exception as exc:
         log.warning("开机自动恢复失败：%s", exc)
-    scheduler.start()
-    scheduler.start_catchup()
-    keepalive.start()
-    bot.start()
-    backup.start_auto()
+    if STANDBY:
+        log.warning("STANDBY=1：值守模式，只提供面板，不启动签到调度 / 机器人 / 自动备份")
+    else:
+        scheduler.start()
+        scheduler.start_catchup()
+        keepalive.start()
+        bot.start()
+        backup.start_auto()
     log.info("TG Checkin Panel %s 已启动", __version__)
     yield
-    scheduler.stop_catchup()
-    backup.stop_auto()
-    bot.stop()
-    keepalive.stop()
-    scheduler.shutdown()
+    if not STANDBY:
+        scheduler.stop_catchup()
+        backup.stop_auto()
+        bot.stop()
+        keepalive.stop()
+        scheduler.shutdown()
 
 
 app = FastAPI(title="TG Checkin Panel", version=__version__, lifespan=lifespan)
@@ -136,6 +145,7 @@ def bootstrap(_: None = Depends(require_auth)) -> dict[str, Any]:
     authorized = bool(account_default and account_default.get("authorized"))
     return {
         "version": __version__,
+        "standby": STANDBY,
         "groups": db.list_groups(),
         "logs": db.list_logs(limit=60),
         "stats": db.stats(),
@@ -465,14 +475,14 @@ def update_settings(body: dict[str, Any], _: None = Depends(require_auth)) -> di
         changed.add(key)
     if "timezone" in changed:
         scheduler.reload_jobs()
-    if changed & {"keepalive_enabled", "keepalive_interval", "keepalive_url"}:
+    if changed & {"keepalive_enabled", "keepalive_interval", "keepalive_url"} and not STANDBY:
         keepalive.restart()
-    if changed & {"bot_enabled", "bot_token", "bot_trigger"}:
+    if changed & {"bot_enabled", "bot_token", "bot_trigger"} and not STANDBY:
         bot.restart()
-    if changed & {"catchup_enabled"}:
+    if changed & {"catchup_enabled"} and not STANDBY:
         if db.get_setting("catchup_enabled", "1") == "1":
             scheduler.start_catchup()
-    if changed & {"backup_auto", "backup_interval"}:
+    if changed & {"backup_auto", "backup_interval"} and not STANDBY:
         if db.get_setting("backup_auto", "0") == "1":
             backup.start_auto()
     result: dict[str, Any] = {"ok": True}
@@ -883,7 +893,8 @@ def create_bot(body: dict[str, Any], _: None = Depends(require_auth)) -> dict[st
             "ai_agent_id": _bot_agent_id(body),
         }
     )
-    bot.start(bot_id)
+    if not STANDBY:
+        bot.start(bot_id)
     return {"ok": True, "id": bot_id, "username": info.get("username", ""), "name": info.get("name", "")}
 
 

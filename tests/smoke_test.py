@@ -30,6 +30,7 @@ with TestClient(app) as client:
     boot = client.get("/api/bootstrap")
     assert boot.status_code == 200, boot.text
     assert boot.json()["stats"]["groups"] == 0
+    assert boot.json()["standby"] is False  # 没设 STANDBY 时是正常模式
 
     created = client.post("/api/groups", json={
         "name": "测试群",
