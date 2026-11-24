@@ -353,6 +353,8 @@ def _handle_message(message: dict[str, Any]) -> None:
         answer = call_ai(messages) or "（模型没有返回内容）"
     except BotError as exc:
         log.warning("AI 调用失败：%s", exc)
+        # 同步到面板状态，否则用户只能翻容器日志才知道为什么没回复
+        _state["last_error"] = f"AI 调用失败：{exc}"
         try:
             _reply(chat_id, f"AI 暂时不可用：{exc}", message.get("message_id"))
         except BotError:
@@ -360,6 +362,8 @@ def _handle_message(message: dict[str, Any]) -> None:
         return
 
     db.add_ai_message(key, title, "assistant", "bot", answer)
+    if _state["last_error"].startswith("AI 调用失败"):
+        _state["last_error"] = ""
     try:
         _reply(chat_id, answer, message.get("message_id"))
     except BotError:

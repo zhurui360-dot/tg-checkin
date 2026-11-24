@@ -116,9 +116,19 @@ docker compose up -d --build    # 修改代码后重新构建
 2. 到 `Actions → keepalive → Run workflow` 手动跑一次，确认输出里是 `HTTP 200`。
 3. 之后它会按 cron 自动执行。GitHub 的定时任务在高峰期可能延迟几分钟，所以间隔取 10 分钟，留足余量。
 
-> 注意：GitHub Actions 的定时任务在仓库连续 60 天无提交后会自动暂停，长期不更新代码时记得回来点一次启用。
+> **实测提醒（重要）**：GitHub Actions 的 `schedule` 属于「尽力而为」的调度，不是精确定时器。实测中新建工作流的首次定时触发可能延迟 30 分钟以上甚至更久，且高峰期可能直接丢弃排队任务。它适合做「兜底」，不适合作为唯一手段。
+>
+> 另外，仓库连续 60 天无提交后，GitHub 会自动暂停定时任务，需要回来手动点一次启用。
 
-如果不用 GitHub Actions，任何能定时发 HTTP 请求的服务都行，比如 UptimeRobot、cron-job.org、你已有的监控系统，目标地址填 `https://你的面板地址/health`。
+**建议再加一个专门的定时服务做冗余**（更可靠，配置一次就不用管）：
+
+| 服务 | 免费额度 | 配置方式 |
+|---|---|---|
+| [UptimeRobot](https://uptimerobot.com) | 50 个监控 / 5 分钟间隔 | 新建 HTTP(s) 监控，URL 填 `https://你的面板地址/health`，关键词填 `ok` |
+| [cron-job.org](https://cron-job.org) | 不限数量 / 1 分钟间隔 | 新建 Cronjob，URL 同上，开启「失败时邮件通知」 |
+| Cloudflare Workers Cron | 每天 10 万次请求 | 写个 `scheduled` handler 发一次 `fetch` 即可 |
+
+目标地址统一填 `https://你的面板地址/health`，返回 `{"status":"ok",...}` 且 HTTP 200 就算成功。三个渠道里建议至少配两个，`/health` 的请求量很小，不会触发限流。
 
 ### 还有更彻底的方案
 
