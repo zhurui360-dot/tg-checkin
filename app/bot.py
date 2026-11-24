@@ -519,6 +519,7 @@ def _poll_loop(stop: threading.Event) -> None:
                     "timeout": 50,
                     "allowed_updates": [
                         "message",
+                        "my_chat_member",
                         "business_connection",
                         "business_message",
                     ],
@@ -542,6 +543,11 @@ def _poll_loop(stop: threading.Event) -> None:
             if isinstance(update_id, int):
                 db.set_setting("bot_update_offset", update_id + 1)
             try:
+                member = update.get("my_chat_member")
+                if member:
+                    # 机器人被拉进群 / 被踢出群：记下群信息，面板可选
+                    remember_chat(member.get("chat") or {})
+                    continue
                 conn = update.get("business_connection")
                 if conn:
                     _handle_business_connection(conn)
@@ -661,6 +667,11 @@ def normalize_chat(value: str) -> Any:
     text = text.split("?")[0].strip().strip("/")
     if not text:
         raise BotError("群组标识为空，请填群 ID（-100 开头）或 @群用户名")
+    # t.me/c/1234567890/45 这种私有群链接，转成 -1001234567890
+    if text.startswith("c/"):
+        parts = text.split("/")
+        if len(parts) >= 2 and parts[1].isdigit():
+            return int("-100" + parts[1])
     if text.startswith("@"):
         return text
     body = text.lstrip("-")
@@ -679,6 +690,7 @@ def _remember_group_message(message: dict[str, Any]) -> None:
     chat = message.get("chat") or {}
     if (chat.get("type") or "") not in ("group", "supergroup"):
         return
+    remember_chat(chat)
     text = message.get("text") or message.get("caption") or ""
     if not str(text).strip():
         return
@@ -704,6 +716,30 @@ def recent_group_messages(chat_key: Any, since_id: int = 0) -> list[dict[str, An
     key = str(chat_key)
     with _recent_lock:
         return [m for m in _recent.get(key, []) if m.get("id", 0) > since_id]
+
+
+def known_chats() -> list[dict[str, Any]]:
+    """机器人待过的群：面板里点一下就能填进群组表单，省得自己找群 ID。"""
+    raw = db.get_setting("known_chats", "")
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def remember_chat(chat: dict[str, Any]) -> None:
+    if (chat.get("type") or "") not in ("group", "supergroup"):
+        return
+    chat_id = chat.get("id")
+    if chat_id is None:
+        return
+    title = chat.get("title") or chat.get("username") or str(chat_id)
+    items = [c for c in known_chats() if c.get("id") != chat_id]
+    items.insert(0, {"id": chat_id, "title": title, "username": chat.get("username") or ""})
+    db.set_setting("known_chats", json.dumps(items[:50], ensure_ascii=False))
 
 
 def polling_alive() -> bool:

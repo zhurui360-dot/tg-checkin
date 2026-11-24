@@ -53,6 +53,8 @@ DEFAULTS: dict[str, str] = {
     "ai_proxy": os.getenv("AI_PROXY", "").strip(),
     # Telegram Business 绑定信息（JSON），由程序写入，不需要手动配置
     "business_connections": "",
+    # 机器人待过的群（JSON），入群事件自动记录，面板可一键填入
+    "known_chats": "",
 }
 
 

@@ -161,6 +161,8 @@ with TestClient(app) as client:
     assert appbot.normalize_chat("-1001234567890") == -1001234567890
     assert appbot.normalize_chat("https://t.me/mygroup") == "@mygroup"
     assert appbot.normalize_chat("@mygroup") == "@mygroup"
+    assert appbot.normalize_chat("https://t.me/c/1234567890/45") == -1001234567890
+    assert client.get("/api/bot/chats").json()["chats"] == []
     try:
         appbot.normalize_chat("https://t.me/+AbCdEf")
         raise AssertionError("邀请链接应当被拒绝")

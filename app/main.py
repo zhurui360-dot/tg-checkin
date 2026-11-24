@@ -367,6 +367,12 @@ def bot_config(_: None = Depends(require_auth)) -> dict[str, Any]:
     }
 
 
+@app.get("/api/bot/chats")
+def bot_chats(_: None = Depends(require_auth)) -> dict[str, Any]:
+    """机器人待过的群，面板可以直接点选填进群组表单。"""
+    return {"chats": bot.known_chats()}
+
+
 @app.post("/api/bot/verify")
 def bot_verify(body: dict[str, Any], _: None = Depends(require_auth)) -> dict[str, Any]:
     """校验 Bot Token，成功则保存。"""
@@ -427,6 +433,7 @@ EXPORT_KEYS = {
     "bot_enabled", "bot_token", "bot_trigger", "ai_base_url", "ai_api_key",
     "ai_model", "ai_system_prompt", "ai_history_len", "ai_max_tokens",
     "ai_temperature", "ai_min_interval", "ai_proxy", "business_connections",
+    "known_chats",
 }
 
 

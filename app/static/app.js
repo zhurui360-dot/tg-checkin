@@ -303,7 +303,34 @@
     fillSettings(data);
     renderKeepalive(data.keepalive);
     renderBot(data.bot);
+    loadKnownChats();
     ensureCredentials();
+  }
+
+  async function loadKnownChats() {
+    const box = $("knownChatsBox");
+    const list = $("knownChatsList");
+    if (!box || !list) return;
+    try {
+      const data = await api("/api/bot/chats");
+      const chats = (data.chats || []).slice(0, 12);
+      list.innerHTML = "";
+      box.hidden = chats.length === 0;
+      chats.forEach((chat) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "chip";
+        btn.textContent = `${chat.title}（${chat.id}）`;
+        btn.addEventListener("click", () => {
+          const form = $("groupForm");
+          if (form) form.elements.chat.value = String(chat.id);
+          toast("已填入群 ID，确认后保存", "ok");
+        });
+        list.appendChild(btn);
+      });
+    } catch (err) {
+      box.hidden = true;
+    }
   }
 
   async function loadBootstrap() {
