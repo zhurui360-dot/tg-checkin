@@ -228,15 +228,15 @@ with TestClient(app) as client:
     def fake_api(method, token, payload):
         calls.append(payload)
         if payload.get("chat_id") == "@a_channel":
-            return {"id": -1001, "type": "channel", "title": "某频道", "linked_chat_id": -1003219886860}
+            return {"id": -1001, "type": "channel", "title": "某频道", "linked_chat_id": -1001234567890}
         if payload.get("chat_id") == "@bare_channel":
             return {"id": -1002, "type": "channel", "title": "没讨论群的频道"}
-        return {"id": -1003219886860, "type": "supergroup", "title": "某群"}
+        return {"id": -1001234567890, "type": "supergroup", "title": "某群"}
 
     appbot._api = fake_api
     try:
         target, hint = appbot._resolve_target("@a_channel", "@a_channel")
-        assert target == -1003219886860, (target, hint)
+        assert target == -1001234567890, (target, hint)
         assert "频道" in hint
         target, hint = appbot._resolve_target("@a_group", "@a_group")
         assert target == "@a_group" and hint == ""
