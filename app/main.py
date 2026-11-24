@@ -265,6 +265,7 @@ SETTING_KEYS = {
     "api_id", "api_hash", "phone", "proxy_url", "timezone", "retry_count",
     "retry_delay", "jitter", "notify_chat", "fail_keywords", "dry_run",
     "panel_password", "keepalive_enabled", "keepalive_interval", "keepalive_url",
+    "checkin_mode",
     # AI 机器人
     "bot_enabled", "bot_token", "bot_trigger",
     "ai_base_url", "ai_api_key", "ai_model", "ai_system_prompt",
@@ -308,6 +309,8 @@ def update_settings(body: dict[str, Any], _: None = Depends(require_auth)) -> di
             continue  # 留空表示不修改
         if key == "bot_trigger" and value not in ("mention", "all", "private"):
             raise HTTPException(status_code=400, detail="bot_trigger 只能是 mention / all / private")
+        if key == "checkin_mode" and value not in ("bot", "user"):
+            raise HTTPException(status_code=400, detail="checkin_mode 只能是 bot / user")
         db.set_setting(key, value)
         changed.add(key)
     if "timezone" in changed:
@@ -420,7 +423,7 @@ def bot_restart(_: None = Depends(require_auth)) -> dict[str, Any]:
 EXPORT_KEYS = {
     "api_id", "api_hash", "phone", "proxy_url", "session_string", "account_name",
     "timezone", "retry_count", "retry_delay", "jitter", "notify_chat",
-    "fail_keywords", "dry_run",
+    "fail_keywords", "dry_run", "checkin_mode",
     "bot_enabled", "bot_token", "bot_trigger", "ai_base_url", "ai_api_key",
     "ai_model", "ai_system_prompt", "ai_history_len", "ai_max_tokens",
     "ai_temperature", "ai_min_interval", "ai_proxy", "business_connections",

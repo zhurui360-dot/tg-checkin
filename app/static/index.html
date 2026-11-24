@@ -80,7 +80,7 @@
             </div>
             <div class="notice">
               <strong>运行机制</strong>
-              <p>服务按每个群组配置的 cron 时间，用已登录的 Telegram 账号向群组发送指定签到指令。发送后会尝试捕获机器人回复并写入日志。</p>
+              <p>服务按每个群组配置的 cron 时间往群里发签到指令。签到方式在「系统设置 → 谁来签到」里切换：默认用机器人（只需 Bot Token，机器人必须先被拉进群），也可以切回自己的账号（需要 api_id）。发送后会尝试捕获机器人回复并写入日志。</p>
             </div>
           </div>
         </div>
@@ -89,10 +89,10 @@
       <!-- 群组管理 -->
       <section id="tab-groups" class="tab-panel">
         <div class="card">
-          <div class="card-head"><h3 id="groupFormTitle">添加群组</h3><span class="muted" id="groupFormHint">先用自己的 Telegram 账号加入目标群组</span></div>
+          <div class="card-head"><h3 id="groupFormTitle">添加群组</h3><span class="muted" id="groupFormHint">机器人要先被拉进群，群 ID 用 -100 开头的数字最稳</span></div>
           <form id="groupForm" class="form-grid">
             <label class="field"><span>群组名称</span><input name="name" placeholder="例如：测试群" required></label>
-            <label class="field"><span>群组链接 / 用户名 / ID</span><input name="chat" placeholder="@mygroup 或 https://t.me/+xxx 或 -1001234567890" required></label>
+            <label class="field"><span>群组链接 / 用户名 / ID</span><input name="chat" placeholder="@mygroup 或 -1001234567890（机器人需已在群里）" required></label>
             <label class="field"><span>签到指令</span><input name="command" value="/checkin" placeholder="/checkin、/sign 或自定义文本"></label>
             <label class="field"><span>启用状态</span><select name="enabled"><option value="1">启用</option><option value="0">暂停</option></select></label>
             <label class="field span-2"><span>签到时间（cron，每行一个）</span>
@@ -164,6 +164,7 @@
             <label class="field"><span>随机延迟上限（秒）</span><input name="jitter" type="number" min="0" value="5"></label>
             <label class="field"><span>结果通知到会话</span><input name="notify_chat" placeholder="留空不通知，可填 @username 或自己的 ID"></label>
             <label class="field"><span>失败关键词（逗号分隔）</span><input name="fail_keywords" placeholder="例如：签到失败,未到时间"></label>
+            <label class="field"><span>谁来签到</span><select name="checkin_mode"><option value="bot">机器人（只要 Bot Token，推荐）</option><option value="user">自己的账号（需要 api_id）</option></select></label>
             <label class="field"><span>模拟运行</span><select name="dry_run"><option value="0">关闭（真实发送）</option><option value="1">开启（不发送消息）</option></select></label>
             <label class="field"><span>面板密码（留空不修改）</span><input name="panel_password" type="password" placeholder="留空保持原密码"></label>
             <label class="field"><span>保活自检</span><select name="keepalive_enabled"><option value="0">关闭</option><option value="1">开启（定时请求自身地址）</option></select></label>

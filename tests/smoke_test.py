@@ -155,4 +155,51 @@ with TestClient(app) as client:
     assert client.get("/api/bot/status").json()["business"][0]["owner_name"] == "Owner"
     appdb.set_setting("business_connections", "")
 
-print("冒烟测试通过：健康检查、鉴权、群组 CRUD、cron 校验、设置保存、保活自检、AI 机器人配置均正常")
+    # ---------- 群签到：默认走机器人（Bot API），不需要 api_id ----------
+    from app import bot as appbot  # noqa: E402
+    assert appdb.get_setting("checkin_mode") == "bot"
+    assert appbot.normalize_chat("-1001234567890") == -1001234567890
+    assert appbot.normalize_chat("https://t.me/mygroup") == "@mygroup"
+    assert appbot.normalize_chat("@mygroup") == "@mygroup"
+    try:
+        appbot.normalize_chat("https://t.me/+AbCdEf")
+        raise AssertionError("邀请链接应当被拒绝")
+    except appbot.BotError:
+        pass
+
+    # 只接受 bot / user，别的一律 400
+    assert client.put("/api/settings", json={"checkin_mode": "bogus"}).status_code == 400
+    assert client.put("/api/settings", json={"checkin_mode": "bot"}).status_code == 200
+
+    # 没有 token 时点「立即签到」应写一条失败日志，而不是把面板打 500
+    assert client.put("/api/settings", json={
+        "retry_count": "0", "retry_delay": "0", "jitter": "0", "dry_run": "0",
+    }).status_code == 200
+    g2 = client.post("/api/groups", json={
+        "name": "机器人签到群",
+        "chat": "@bot_checkin_group",
+        "command": "/checkin",
+        "schedule": ["0 8 * * *"],
+        "enabled": True,
+    }).json()["id"]
+    test_run = client.post(f"/api/groups/{g2}/test")
+    assert test_run.status_code == 500, test_run.text
+    assert "Bot Token" in test_run.json()["detail"], test_run.text
+    assert client.delete(f"/api/groups/{g2}").status_code == 200
+
+    # 切到账号模式时没有登录会话，同样只写失败日志
+    assert client.put("/api/settings", json={"checkin_mode": "user"}).status_code == 200
+    g3 = client.post("/api/groups", json={
+        "name": "账号签到群",
+        "chat": "@user_checkin_group",
+        "command": "/checkin",
+        "schedule": ["0 8 * * *"],
+        "enabled": True,
+    }).json()["id"]
+    user_run = client.post(f"/api/groups/{g3}/test")
+    assert user_run.status_code == 500, user_run.text
+    assert "API ID" in user_run.json()["detail"], user_run.text
+    assert client.delete(f"/api/groups/{g3}").status_code == 200
+    assert client.put("/api/settings", json={"checkin_mode": "bot"}).status_code == 200
+
+print("冒烟测试通过：健康检查、鉴权、群组 CRUD、cron 校验、设置保存、保活自检、AI 机器人、机器人签到均正常")

@@ -29,6 +29,8 @@ DEFAULTS: dict[str, str] = {
     "notify_chat": "",
     "fail_keywords": "",
     "dry_run": "0",
+    # 签到执行者：bot = 用机器人（Bot API，只要 token）；user = 用自己账号（Telethon，需要 api_id）
+    "checkin_mode": os.getenv("CHECKIN_MODE", "").strip() or "bot",
     "keepalive_enabled": "1" if os.getenv("PUBLIC_URL", "").strip() else "0",
     "keepalive_interval": "300",
     "keepalive_url": os.getenv("PUBLIC_URL", "").strip(),

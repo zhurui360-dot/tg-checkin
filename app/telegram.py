@@ -17,6 +17,7 @@ from telethon import TelegramClient, errors as tg_errors
 from telethon.sessions import StringSession
 
 from . import db
+from .bot import BotError as BotApiError
 
 T = TypeVar("T")
 
@@ -98,6 +99,8 @@ def normalize_chat(chat: str) -> str | int:
 
 
 def friendly_error(exc: BaseException) -> str:
+    if isinstance(exc, BotApiError):
+        return str(exc)
     if isinstance(exc, tg_errors.FloodWaitError):
         return f"触发 Telegram 限流，请等待约 {exc.seconds} 秒后再试"
     if isinstance(exc, tg_errors.UsernameInvalidError):
@@ -314,6 +317,8 @@ def execute_checkin(group_id: int, source: str = "auto") -> dict[str, Any]:
         return {"ok": False, "message": "群组不存在"}
 
     cfg = db.get_settings()
+    # 默认用机器人签到（只要 bot_token）；填 user 才走自己的账号（需要 api_id）
+    mode = (cfg.get("checkin_mode") or "bot").strip().lower()
     try:
         retries = max(0, min(int(cfg.get("retry_count", "2")), 5))
         retry_delay = max(0, min(float(cfg.get("retry_delay", "10")), 300))
@@ -329,7 +334,12 @@ def execute_checkin(group_id: int, source: str = "auto") -> dict[str, Any]:
         if jitter:
             time.sleep(random.uniform(0, jitter))
         try:
-            result = run_tg(_send_checkin, group, cfg)
+            if mode == "user":
+                result = run_tg(_send_checkin, group, cfg)
+            else:
+                from . import bot as bot_api
+
+                result = bot_api.checkin(group, cfg)
             error = ""
             break
         except Exception as exc:
@@ -348,11 +358,14 @@ def execute_checkin(group_id: int, source: str = "auto") -> dict[str, Any]:
 
     if cfg.get("notify_chat", "").strip():
         flag = "成功" if ok else "失败"
+        text = f"[TG 签到] {group['name']} 签到{flag}\n备注：{note[:300]}"
         try:
-            run_tg(
-                _notify,
-                f"[TG 签到] {group['name']} 签到{flag}\n备注：{note[:300]}",
-            )
+            if mode == "user":
+                run_tg(_notify, text)
+            else:
+                from . import bot as bot_api
+
+                bot_api.send_text(cfg["notify_chat"], text)
         except Exception:
             pass
 
@@ -362,5 +375,6 @@ def execute_checkin(group_id: int, source: str = "auto") -> dict[str, Any]:
         "group_id": group_id,
         "group_name": group["name"],
         "source": source,
+        "mode": mode,
         "duration": duration,
     }

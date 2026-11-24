@@ -177,7 +177,7 @@
     if (state.settingsFilled) return;
     const form = $("settingsForm");
     const s = data.settings;
-    ["timezone", "retry_count", "retry_delay", "jitter", "notify_chat", "fail_keywords", "dry_run", "keepalive_enabled", "keepalive_interval", "keepalive_url"].forEach((key) => {
+    ["timezone", "retry_count", "retry_delay", "jitter", "notify_chat", "fail_keywords", "dry_run", "checkin_mode", "keepalive_enabled", "keepalive_interval", "keepalive_url"].forEach((key) => {
       if (form.elements[key]) form.elements[key].value = s[key] ?? "";
     });
     state.settingsFilled = true;
@@ -503,7 +503,7 @@
       e.preventDefault();
       const form = e.currentTarget;
       const payload = {};
-      ["timezone", "retry_count", "retry_delay", "jitter", "notify_chat", "fail_keywords", "dry_run", "panel_password", "keepalive_enabled", "keepalive_interval", "keepalive_url"].forEach((key) => {
+      ["timezone", "retry_count", "retry_delay", "jitter", "notify_chat", "fail_keywords", "dry_run", "checkin_mode", "panel_password", "keepalive_enabled", "keepalive_interval", "keepalive_url"].forEach((key) => {
         payload[key] = form.elements[key].value.trim();
       });
       try {
