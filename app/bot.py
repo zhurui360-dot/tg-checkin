@@ -811,7 +811,7 @@ def checkin(group: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
         raise BotError("没有 Bot Token，无法用机器人签到。请到「AI 机器人」页填写 Token")
 
     target = normalize_chat(group.get("chat", ""))
-    command = (group.get("command") or "/checkin").strip() or "/checkin"
+    command = (group.get("command") or "签到").strip() or "签到"
 
     try:
         target, hint = _resolve_target(token, target)

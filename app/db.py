@@ -87,7 +87,7 @@ def init_db() -> None:
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 name       TEXT NOT NULL,
                 chat       TEXT NOT NULL,
-                command    TEXT NOT NULL DEFAULT '/checkin',
+                command    TEXT NOT NULL DEFAULT '签到',
                 schedule   TEXT NOT NULL DEFAULT '["0 8 * * *"]',
                 enabled    INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -167,7 +167,7 @@ def _bootstrap_from_env(conn: sqlite3.Connection) -> None:
                 (
                     str(group.get("name") or group["chat"]),
                     str(group["chat"]),
-                    str(group.get("command") or "/checkin"),
+                    str(group.get("command") or "签到"),
                     schedule,
                     1 if group.get("enabled", True) else 0,
                 ),

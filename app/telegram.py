@@ -564,7 +564,7 @@ def _send_checkin(group: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
             note = "模拟运行：已连接到群组，但未真正发送消息"
             return {"note": f"{note}（{hint}）" if hint else note, "failed": False}
 
-        message = client.send_message(entity, group["command"] or "/checkin")
+        message = client.send_message(entity, group["command"] or "签到")
         time.sleep(2)
 
         replies = list(client.get_messages(entity, limit=10, min_id=last_id, reverse=True))

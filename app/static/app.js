@@ -420,7 +420,7 @@
       const payload = {
         name: form.elements.name.value.trim(),
         chat: form.elements.chat.value.trim(),
-        command: form.elements.command.value.trim() || "/checkin",
+        command: form.elements.command.value.trim() || "签到",
         schedule: form.elements.schedule.value,
         enabled: form.elements.enabled.value === "1",
       };
@@ -791,7 +791,7 @@
   function resetGroupForm() {
     const form = $("groupForm");
     form.reset();
-    form.elements.command.value = "/checkin";
+    form.elements.command.value = "签到";
     state.editingGroupId = null;
     $("groupFormTitle").textContent = "添加群组";
     $("groupSubmitBtn").textContent = "添加群组";

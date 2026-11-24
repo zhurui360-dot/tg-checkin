@@ -219,4 +219,37 @@ with TestClient(app) as client:
     # 二维码渲染（不联网，纯本地编码）
     assert len(apptg._qr_svg("tg://login?token=ZA")) > 200
 
+    # ---------- 频道链接：自动改发关联讨论群 ----------
+    from app import bot as appbot
+
+    calls: list[dict] = []
+    original_api = appbot._api
+
+    def fake_api(method, token, payload):
+        calls.append(payload)
+        if payload.get("chat_id") == "@a_channel":
+            return {"id": -1001, "type": "channel", "title": "某频道", "linked_chat_id": -1003219886860}
+        if payload.get("chat_id") == "@bare_channel":
+            return {"id": -1002, "type": "channel", "title": "没讨论群的频道"}
+        return {"id": -1003219886860, "type": "supergroup", "title": "某群"}
+
+    appbot._api = fake_api
+    try:
+        target, hint = appbot._resolve_target("@a_channel", "@a_channel")
+        assert target == -1003219886860, (target, hint)
+        assert "频道" in hint
+        target, hint = appbot._resolve_target("@a_group", "@a_group")
+        assert target == "@a_group" and hint == ""
+        try:
+            appbot._resolve_target("@bare_channel", "@bare_channel")
+            raise AssertionError("频道没有讨论群时应报错")
+        except appbot.BotError as exc:
+            assert "频道" in str(exc), str(exc)
+    finally:
+        appbot._api = original_api
+
+    # 权限类报错要翻成能照着做的中文
+    assert "管理员" in appbot._group_error_hint("Bad Request: chat admin privileges are required", "@g")
+    assert apptg.is_permission_error(RuntimeError("普通错误")) is False
+
 print("冒烟测试通过：健康检查、鉴权、群组 CRUD、cron 校验、设置保存、保活自检、AI 机器人、机器人签到、扫码登录接口均正常")

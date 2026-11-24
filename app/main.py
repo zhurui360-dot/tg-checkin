@@ -162,7 +162,7 @@ def bootstrap(_: None = Depends(require_auth)) -> dict[str, Any]:
 def _normalize_group(body: dict[str, Any]) -> dict[str, Any]:
     name = str(body.get("name", "")).strip()
     chat = str(body.get("chat", "")).strip()
-    command = str(body.get("command", "")).strip() or "/checkin"
+    command = str(body.get("command", "")).strip() or "签到"
     if not chat:
         raise HTTPException(status_code=400, detail="请填写群组链接、用户名或 ID")
 
