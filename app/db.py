@@ -47,6 +47,8 @@ DEFAULTS: dict[str, str] = {
     "ai_max_tokens": "800",
     "ai_temperature": "0.7",
     "ai_min_interval": "3",
+    # 出网代理，留空表示直连。接口只对大陆网络开放、而主机在境外时填这里。
+    "ai_proxy": os.getenv("AI_PROXY", "").strip(),
 }
 
 

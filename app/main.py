@@ -269,6 +269,7 @@ SETTING_KEYS = {
     "bot_enabled", "bot_token", "bot_trigger",
     "ai_base_url", "ai_api_key", "ai_model", "ai_system_prompt",
     "ai_history_len", "ai_max_tokens", "ai_temperature", "ai_min_interval",
+    "ai_proxy",
 }
 
 BOT_NUMERIC_KEYS = {"ai_history_len", "ai_max_tokens", "ai_temperature", "ai_min_interval"}
@@ -359,6 +360,7 @@ def bot_config(_: None = Depends(require_auth)) -> dict[str, Any]:
         "ai_max_tokens": settings.get("ai_max_tokens", "800"),
         "ai_temperature": settings.get("ai_temperature", "0.7"),
         "ai_min_interval": settings.get("ai_min_interval", "3"),
+        "ai_proxy": settings.get("ai_proxy", ""),
     }
 
 
@@ -421,7 +423,7 @@ EXPORT_KEYS = {
     "fail_keywords", "dry_run",
     "bot_enabled", "bot_token", "bot_trigger", "ai_base_url", "ai_api_key",
     "ai_model", "ai_system_prompt", "ai_history_len", "ai_max_tokens",
-    "ai_temperature", "ai_min_interval",
+    "ai_temperature", "ai_min_interval", "ai_proxy",
 }
 
 

@@ -198,6 +198,16 @@ docker compose up -d --build    # 修改代码后重新构建
 - 通义千问：`https://dashscope.aliyuncs.com/compatible-mode/v1`
 - 自建 one-api / new-api 中转：`https://你的域名/v1`
 
+**如果报 `[Errno 104] Connection reset by peer` 或连接超时**，这不是 Key 或模型名的问题，而是这台服务器到接口的网络不通，最常见的原因是接口（或你用的中转）只对大陆网络开放。判断方法：在能正常上网的国内机器上 `curl` 同一个地址能通，部署在境外云主机上就不通。
+
+三种解法，按推荐顺序：
+
+1. **换全球可达的服务**：DeepSeek、硅基流动、OpenRouter 等国内外都能访问，直接换 base_url 即可。
+2. **在「出网代理」里填一个境外可用的 HTTP 代理**：形如 `http://user:pass@host:port`。填了之后所有 AI 请求都走代理，可以继续用原来的中转。
+3. 让中转提供方换成境外可接入的线路。
+
+「出网代理」留空表示直连，不影响 Bot API 和签到。注意代理必须是境外能连上的；如果代理本身在大陆，问题依旧。
+
 ### 4. 触发方式
 
 在「接入机器人」里选择：
@@ -237,6 +247,10 @@ docker compose start
 **3. AI 报 401 / 404**
 
 401 是 API Key 错误，404 一般是 base_url 或模型名写错。base_url 要填到 `/v1` 为止，不要带 `/chat/completions`。
+
+**3.1 AI 报 `[Errno 104] Connection reset by peer` / 连接超时**
+
+不是 Key 的问题，是这台服务器到接口的网络不通。详见第六节第 3 步的说明，通常是接口只对大陆网络开放，换全球可达的服务或填「出网代理」即可。
 
 **4. 签到日志里有机器人回复，但提示失败**
 

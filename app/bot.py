@@ -174,6 +174,16 @@ def call_ai(messages: list[dict[str, str]]) -> str:
             "stream": False,
         }
     ).encode("utf-8")
+
+    # 配置了代理就走代理，否则直连（容器内环境变量常带代理，直连必须显式清空）
+    proxy = (cfg.get("ai_proxy") or "").strip()
+    if proxy:
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": proxy, "https": proxy})
+        )
+    else:
+        opener = _opener
+
     request = urllib.request.Request(
         url,
         data=payload,
@@ -184,20 +194,40 @@ def call_ai(messages: list[dict[str, str]]) -> str:
             "User-Agent": "tg-checkin-bot/1.0",
         },
     )
-    try:
-        with _opener.open(request, timeout=90) as response:
-            body = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", "replace")
-        if exc.code == 401:
-            raise BotError("AI 接口鉴权失败，请检查 API Key") from exc
-        if exc.code == 404:
-            raise BotError(f"AI 接口地址或模型名有误（HTTP 404）：{raw[:200]}") from exc
-        raise BotError(f"AI 接口返回 HTTP {exc.code}：{raw[:200]}") from exc
-    except urllib.error.URLError as exc:
-        raise BotError(f"无法连接 AI 接口：{exc.reason}") from exc
-    except TimeoutError as exc:
-        raise BotError("AI 接口响应超时") from exc
+    # 连接被重置/超时属于跨境链路问题，多半是接口只对大陆网络开放，
+    # 云主机（多在境外）连不上。重试一次仍失败就给出可操作的提示。
+    last_net_error: Exception | None = None
+    for attempt in (1, 2):
+        try:
+            with opener.open(request, timeout=90) as response:
+                body = json.loads(response.read().decode("utf-8"))
+            last_net_error = None
+            break
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", "replace")
+            if exc.code == 401:
+                raise BotError("AI 接口鉴权失败，请检查 API Key") from exc
+            if exc.code == 404:
+                raise BotError(f"AI 接口地址或模型名有误（HTTP 404）：{raw[:200]}") from exc
+            raise BotError(f"AI 接口返回 HTTP {exc.code}：{raw[:200]}") from exc
+        except urllib.error.URLError as exc:
+            last_net_error = exc
+        except (TimeoutError, ConnectionResetError) as exc:
+            last_net_error = exc
+        if attempt == 1:
+            time.sleep(2)
+
+    if last_net_error is not None:
+        reason = getattr(last_net_error, "reason", last_net_error)
+        detail = str(reason)
+        if "timed out" in detail.lower() or "reset" in detail.lower():
+            raise BotError(
+                f"无法连接 AI 接口：{detail}。这个地址在当前网络下不可达，"
+                "常见原因是接口（或中转）只对大陆网络开放；部署在境外云主机时会被墙/被拒。"
+                "请换用全球可达的服务，例如 https://api.deepseek.com/v1、"
+                "https://api.siliconflow.cn/v1 或 https://openrouter.ai/api/v1。"
+            )
+        raise BotError(f"无法连接 AI 接口：{detail}")
 
     try:
         text = body["choices"][0]["message"]["content"]

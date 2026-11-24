@@ -104,6 +104,15 @@ with TestClient(app) as client:
     assert client.put("/api/settings", json={"ai_api_key": "   "}).status_code == 200
     assert client.get("/api/bot/config").json()["ai_api_key_set"] is True
 
+    # 出网代理可保存、可回显（用于境外主机连只对大陆开放的接口）
+    assert client.put("/api/settings", json={
+        "ai_proxy": "http://127.0.0.1:1080",
+    }).status_code == 200
+    assert client.get("/api/bot/config").json()["ai_proxy"] == "http://127.0.0.1:1080"
+    # 清空代理回到直连
+    assert client.put("/api/settings", json={"ai_proxy": ""}).status_code == 200
+    assert client.get("/api/bot/config").json()["ai_proxy"] == ""
+
     # 无 token 时校验应给出明确 400，而不是 500
     bad_verify = client.post("/api/bot/verify", json={"token": ""})
     assert bad_verify.status_code == 400, bad_verify.text

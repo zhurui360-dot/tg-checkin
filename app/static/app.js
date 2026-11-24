@@ -249,7 +249,7 @@
       const form = $("aiForm");
       if (!form) return;
       ["ai_base_url", "ai_model", "ai_system_prompt", "ai_history_len",
-        "ai_max_tokens", "ai_temperature", "ai_min_interval"].forEach((key) => {
+        "ai_max_tokens", "ai_temperature", "ai_min_interval", "ai_proxy"].forEach((key) => {
         if (form.elements[key]) form.elements[key].value = cfg[key] ?? "";
       });
       if (form.elements.ai_api_key) {
@@ -581,7 +581,7 @@
       const form = e.currentTarget;
       const payload = {};
       ["ai_base_url", "ai_model", "ai_api_key", "ai_system_prompt", "ai_history_len",
-        "ai_max_tokens", "ai_temperature", "ai_min_interval"].forEach((key) => {
+        "ai_max_tokens", "ai_temperature", "ai_min_interval", "ai_proxy"].forEach((key) => {
         payload[key] = form.elements[key].value.trim();
       });
       try {

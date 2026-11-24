@@ -238,6 +238,8 @@
             <label class="field"><span>最大回复长度</span><input name="ai_max_tokens" type="number" min="64" max="4096" placeholder="800"></label>
             <label class="field"><span>温度（0-2）</span><input name="ai_temperature" type="number" step="0.1" min="0" max="2" placeholder="0.7"></label>
             <label class="field"><span>最短回复间隔（秒）</span><input name="ai_min_interval" type="number" step="1" min="0" max="60" placeholder="3"></label>
+            <label class="field span-2"><span>出网代理（可选）</span><input name="ai_proxy" placeholder="http://user:pass@host:port，留空直连"></label>
+            <p class="muted span-2" style="margin:0">接口只对大陆网络开放、而主机部署在境外时，直连会报「Connection reset by peer」。这种情况需要填一个境外可用的代理，或改用全球可达的接口。</p>
             <div class="span-2 form-actions">
               <button type="submit" class="btn primary">保存 AI 设置</button>
               <button type="button" class="btn" id="aiTestBtn">测试 AI 连通性</button>
