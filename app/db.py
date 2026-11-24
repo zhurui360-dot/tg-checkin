@@ -29,6 +29,9 @@ DEFAULTS: dict[str, str] = {
     "notify_chat": "",
     "fail_keywords": "",
     "dry_run": "0",
+    "keepalive_enabled": "1" if os.getenv("PUBLIC_URL", "").strip() else "0",
+    "keepalive_interval": "300",
+    "keepalive_url": os.getenv("PUBLIC_URL", "").strip(),
     "panel_password": os.getenv("PANEL_PASSWORD", "admin123"),
 }
 

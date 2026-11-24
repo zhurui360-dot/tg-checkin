@@ -42,39 +42,35 @@ docker compose down             # 停止（数据保留在 ./data）
 docker compose up -d --build    # 修改代码后重新构建
 ```
 
-## 三、部署到 Koyeb
+## 三、环境变量
 
-Koyeb 免费组织通常没有持久卷权限，容器文件系统是临时的，因此登录会话和群组配置在重建实例后会丢失。本项目支持把完整配置导出到环境变量 `TGCK_CONFIG`，在容器首次初始化时自动恢复。
+所有配置都可以在面板里改，下列环境变量用于首次启动或容器编排：
 
-### 从零部署的命令
+| 变量 | 说明 | 默认值 |
+| --- | --- | --- |
+| `PANEL_PASSWORD` | 面板初始密码，仅在数据库首次初始化时生效 | `admin123` |
+| `DATA_DIR` | SQLite 数据目录 | `/app/data` |
+| `TZ` | 容器时区 | `UTC` |
+| `TGCK_CONFIG` | 启动时导入的配置 JSON（含登录会话），仅在空库时生效 | 空 |
+| `PUBLIC_URL` | 面板公网地址，用于保活自检；留空则自动探测 | 空 |
+| `LOG_LEVEL` | 日志级别 | `INFO` |
 
-```bash
-koyeb deploy . <org>/<app> \
-  --archive-builder docker \
-  --ports 8000 --checks 8000:http:/health \
-  --regions was --instance-type free \
-  --env PANEL_PASSWORD='换成你自己的强密码' \
-  --env TZ=Asia/Shanghai --env DATA_DIR=/app/data \
-  --wait
+## 四、无持久卷环境的保活
 
-# 改为 GitHub 驱动部署（推送 main 自动更新）
-koyeb services update <org>/<app> \
-  --git github.com/<你的用户名>/tg-checkin --git-branch main --git-builder docker
-```
+如果部署在实例会因空闲而休眠的平台上，容器停止期间调度器不运行，自动签到会漏掉。本项目内置保活自检：一个后台线程按设定间隔请求自身的公网 `/health` 地址，制造入站流量让实例保持活跃。
 
-### 两个重要限制
+在「系统设置」里可以：
 
-1. **没有持久卷**：当前组织没有卷权限，容器文件系统是临时的，重建实例后登录会话和群组配置会丢失。本项目支持把配置导出到环境变量 `TGCK_CONFIG`，在容器首次初始化时自动恢复：
-   - 面板「系统设置」→「导出配置（含登录会话）」，下载 `tg-checkin-config.json`。
-   - 保存为 Koyeb Secret 并绑定：
-     ```bash
-     cat tg-checkin-config.json | koyeb secrets create tgck_config --value-from-stdin
-     koyeb services update <org>/<app> --env 'TGCK_CONFIG={{secret.tgck_config}}'
-     ```
-   - JSON 内含 Telegram 会话，等同于账号凭证，请妥善保管。
-2. **Free 实例会休眠**：平台规定 free 实例最多空闲约 65 分钟后深度休眠，且不允许 `min-scale=1`。休眠期间调度器不会运行。要保证 7×24 自动签到，需要在 Koyeb 绑定支付方式后把实例规格改为 `nano` 或更高（`koyeb services update <org>/<app> --instance-type nano`），或用外部定时请求持续唤醒面板地址。
+- **保活自检**：开关，默认关闭；设置了 `PUBLIC_URL` 时默认开启。
+- **保活间隔**：默认 300 秒，最小 60 秒，最大 3600 秒。
+- **保活目标地址**：留空时自动探测——用公网域名访问一次面板，程序会记住该地址。也可以通过 `PUBLIC_URL` 指定。
+- **立即自检**：手动触发一次，验证地址是否可达。
 
-## 四、面板使用流程
+面板会显示最近一次自检的时间和结果。连续失败时「运行日志」里会出现「保活自检」记录，可按这个排查地址是否写错、平台是否已把实例停掉。
+
+> 保活请求必须打到公网域名。访问 `127.0.0.1` 不经过平台入口，不会被算作入站流量，无法阻止休眠。
+
+## 五、面板使用流程
 
 1. **账号与登录**：填写 API ID、API Hash、手机号（境外网络环境可填 socks5/http 代理），点「保存凭据」，再点「获取验证码并登录」。验证码会发到你的 Telegram 账号（一般在 Saved Messages 或官方通知里），填入后完成登录；开启两步验证的账号继续填验证密码。
 2. **账号与登录**：点「检查登录状态」确认已登录。
@@ -101,7 +97,7 @@ koyeb services update <org>/<app> \
 
 时区在「系统设置」中修改，例如 `Asia/Shanghai`、`Asia/Tokyo`、`UTC`。修改后调度任务会自动重载。
 
-## 五、数据与备份
+## 六、数据与备份
 
 所有数据都在宿主机的 `./data/checkin.db`：包括配置、Telegram 会话字符串、群组和日志。备份时停止容器后复制该文件即可：
 
@@ -113,7 +109,7 @@ docker compose start
 
 注意：这个文件包含 Telegram 会话，等同于账号登录凭证，请不要泄露或上传到公开仓库。
 
-## 六、常见问题
+## 七、常见问题
 
 - **收不到验证码**：确认手机号带区号；确认 API ID/Hash 正确；网络受限时配置代理。验证码有时会被 Telegram 归到「Saved Messages」。
 - **提示触发限流（FloodWait）**：Telegram 要求等待若干秒，按提示时间过后再试，不要连续重试。
@@ -126,7 +122,7 @@ docker compose start
   docker compose restart
   ```
 
-## 七、本地冒烟测试（可选）
+## 八、本地冒烟测试（可选）
 
 不需要连接 Telegram 即可验证面板接口：
 
@@ -136,6 +132,6 @@ pip install -r requirements.txt
 python tests/smoke_test.py
 ```
 
-## 八、使用提醒
+## 九、使用提醒
 
 该工具会代表你的账号在群里定时发送消息。请只在你有权参与的群组中使用，遵守 Telegram 服务条款和群规，不要用于批量骚扰、刷屏或规避平台限制；频繁自动化操作可能导致账号被限制。建议开启随机延迟，并避免把间隔设得过小。

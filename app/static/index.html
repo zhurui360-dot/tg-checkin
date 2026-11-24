@@ -165,11 +165,19 @@
             <label class="field"><span>失败关键词（逗号分隔）</span><input name="fail_keywords" placeholder="例如：签到失败,未到时间"></label>
             <label class="field"><span>模拟运行</span><select name="dry_run"><option value="0">关闭（真实发送）</option><option value="1">开启（不发送消息）</option></select></label>
             <label class="field"><span>面板密码（留空不修改）</span><input name="panel_password" type="password" placeholder="留空保持原密码"></label>
+            <label class="field"><span>保活自检</span><select name="keepalive_enabled"><option value="0">关闭</option><option value="1">开启（定时请求自身地址）</option></select></label>
+            <label class="field"><span>保活间隔（秒，最小 60）</span><input name="keepalive_interval" type="number" min="60" max="3600" value="300"></label>
+            <label class="field span-2"><span>保活目标地址（留空自动探测）</span><input name="keepalive_url" placeholder="https://你的域名，程序会请求该地址的 /health"></label>
             <div class="span-2 form-actions">
               <button type="submit" class="btn primary">保存设置</button>
+              <button type="button" class="btn" id="keepalivePingBtn">立即自检</button>
               <button type="button" class="btn" id="exportConfigBtn">导出配置（含登录会话）</button>
             </div>
           </form>
+          <div class="notice" id="keepaliveNotice">
+            <strong>保活状态</strong>
+            <p id="keepaliveText">加载中…</p>
+          </div>
         </div>
         <div class="notice wide">
           <strong>提示</strong>

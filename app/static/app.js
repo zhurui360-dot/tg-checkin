@@ -172,7 +172,7 @@
     if (state.settingsFilled) return;
     const form = $("settingsForm");
     const s = data.settings;
-    ["timezone", "retry_count", "retry_delay", "jitter", "notify_chat", "fail_keywords", "dry_run"].forEach((key) => {
+    ["timezone", "retry_count", "retry_delay", "jitter", "notify_chat", "fail_keywords", "dry_run", "keepalive_enabled", "keepalive_interval", "keepalive_url"].forEach((key) => {
       if (form.elements[key]) form.elements[key].value = s[key] ?? "";
     });
     state.settingsFilled = true;
@@ -181,12 +181,30 @@
     }
   }
 
+  function renderKeepalive(info) {
+    const box = $("keepaliveText");
+    if (!box) return;
+    if (!info || !info.url) {
+      box.textContent = info && info.enabled
+        ? "已开启，但还没探测到公网地址。请先用公网域名访问一次面板，或手动填写保活目标地址。"
+        : "未启用。若部署在会休眠的平台上，建议开启以避免调度器停止。";
+      return;
+    }
+    const stateText = info.enabled ? "已开启" : "已关闭";
+    const lastText = info.last_ping
+      ? `${info.last_ping} ${info.last_ok ? "成功" : "失败"}` + (info.last_status ? `（${info.last_status}）` : "")
+      : "尚未执行";
+    box.textContent = `${stateText} · 间隔 ${info.interval} 秒 · 目标 ${info.url} · 上次 ${lastText} · 成功 ${info.ok_count} 次` +
+      (info.fail_streak ? ` · 连续失败 ${info.fail_streak} 次` : "");
+  }
+
   function renderAll(data) {
     state.data = data;
     renderDashboard(data);
     renderGroups(data);
     renderLogs(data);
     fillSettings(data);
+    renderKeepalive(data.keepalive);
     ensureCredentials();
   }
 
@@ -387,7 +405,7 @@
       e.preventDefault();
       const form = e.currentTarget;
       const payload = {};
-      ["timezone", "retry_count", "retry_delay", "jitter", "notify_chat", "fail_keywords", "dry_run", "panel_password"].forEach((key) => {
+      ["timezone", "retry_count", "retry_delay", "jitter", "notify_chat", "fail_keywords", "dry_run", "panel_password", "keepalive_enabled", "keepalive_interval", "keepalive_url"].forEach((key) => {
         payload[key] = form.elements[key].value.trim();
       });
       try {
@@ -395,6 +413,14 @@
         form.elements.panel_password.value = "";
         toast("设置已保存", "ok");
         await loadBootstrap();
+      } catch (err) { toast(err.message, "err"); }
+    });
+
+    $("keepalivePingBtn").addEventListener("click", async () => {
+      try {
+        const info = await api("/api/keepalive/ping", { method: "POST" });
+        renderKeepalive(info);
+        toast(info.last_ok ? "自检成功，实例处于活跃状态" : `自检失败：${info.last_status}`, info.last_ok ? "ok" : "err");
       } catch (err) { toast(err.message, "err"); }
     });
 

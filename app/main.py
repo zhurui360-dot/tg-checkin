@@ -13,7 +13,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__, db, scheduler, telegram
+from . import __version__, db, keepalive, scheduler, telegram
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -29,13 +29,26 @@ COOKIE_NAME = "tgck_session"
 async def lifespan(app: FastAPI):
     db.init_db()
     scheduler.start()
+    keepalive.start()
     log.info("TG Checkin Panel %s 已启动", __version__)
     yield
+    keepalive.stop()
     scheduler.shutdown()
 
 
 app = FastAPI(title="TG Checkin Panel", version=__version__, lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+@app.middleware("http")
+async def learn_public_host(request: Request, call_next):
+    """从外部请求里学出公网地址，供保活自检使用。"""
+    host = request.headers.get("host", "")
+    if host and "keepalive" not in request.url.path:
+        # 反向代理后面 request.url.scheme 恒为 http，真实协议在 X-Forwarded-Proto
+        scheme = request.headers.get("x-forwarded-proto", "").split(",")[0].strip()
+        keepalive.learn_from_request(scheme or request.url.scheme, host)
+    return await call_next(request)
 
 
 # ---------------- 鉴权 ----------------
@@ -128,12 +141,16 @@ def bootstrap(_: None = Depends(require_auth)) -> dict[str, Any]:
             "using_default_password": _panel_password() == "admin123",
             "session_set": bool(settings.get("session_string", "")),
             "account_name": settings.get("account_name", ""),
+            "keepalive_enabled": settings.get("keepalive_enabled", "0"),
+            "keepalive_interval": settings.get("keepalive_interval", "300"),
+            "keepalive_url": settings.get("keepalive_url", ""),
         },
         "account": {
             "authorized": bool(settings.get("session_string", "")),
             "name": settings.get("account_name", ""),
             "phone": mask(settings.get("phone", ""), 3),
         },
+        "keepalive": keepalive.status(),
     }
 
 
@@ -244,7 +261,7 @@ def delete_logs(_: None = Depends(require_auth)) -> dict[str, Any]:
 SETTING_KEYS = {
     "api_id", "api_hash", "phone", "proxy_url", "timezone", "retry_count",
     "retry_delay", "jitter", "notify_chat", "fail_keywords", "dry_run",
-    "panel_password",
+    "panel_password", "keepalive_enabled", "keepalive_interval", "keepalive_url",
 }
 
 
@@ -261,7 +278,7 @@ def update_settings(body: dict[str, Any], _: None = Depends(require_auth)) -> di
                 ZoneInfo(value)
             except Exception:
                 raise HTTPException(status_code=400, detail=f"无效时区：{value}")
-        if key in ("retry_count", "retry_delay", "jitter"):
+        if key in ("retry_count", "retry_delay", "jitter", "keepalive_interval"):
             try:
                 number = float(value)
                 if number < 0:
@@ -274,7 +291,29 @@ def update_settings(body: dict[str, Any], _: None = Depends(require_auth)) -> di
         changed.add(key)
     if "timezone" in changed:
         scheduler.reload_jobs()
+    if changed & {"keepalive_enabled", "keepalive_interval", "keepalive_url"}:
+        keepalive.restart()
     return {"ok": True}
+
+
+# ---------------- 保活自检 ----------------
+
+@app.get("/api/keepalive")
+def keepalive_status(_: None = Depends(require_auth)) -> dict[str, Any]:
+    return keepalive.status()
+
+
+@app.post("/api/keepalive/ping")
+def keepalive_ping_now(_: None = Depends(require_auth)) -> dict[str, Any]:
+    """立即执行一次自检，返回最新状态。"""
+    if not keepalive.enabled():
+        raise HTTPException(status_code=400, detail="保活未启用，请先在设置里打开")
+    if not keepalive.target_url():
+        raise HTTPException(
+            status_code=400,
+            detail="还没有探测到公网地址，请填写保活目标地址，或先用公网地址访问一次面板",
+        )
+    return keepalive.ping_now()
 
 
 # ---------------- 配置导出（用于无持久卷环境） ----------------

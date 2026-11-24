@@ -48,4 +48,28 @@ with TestClient(app) as client:
     assert client.delete(f"/api/groups/{group_id}").status_code == 200
     assert client.get("/api/bootstrap").json()["stats"]["groups"] == 0
 
-print("冒烟测试通过：健康检查、鉴权、群组 CRUD、cron 校验、设置保存均正常")
+    # 保活：默认关闭时应拒绝立即自检；开启后能探测到公网地址并通过校验
+    ka = client.get("/api/keepalive").json()
+    assert ka["enabled"] in (True, False) and "interval" in ka
+    assert client.post("/api/keepalive/ping").status_code == 400
+
+    assert client.put("/api/settings", json={
+        "keepalive_enabled": "1",
+        "keepalive_interval": "600",
+        "keepalive_url": "http://127.0.0.1:9/health",
+    }).status_code == 200
+    after = client.get("/api/keepalive").json()
+    assert after["enabled"] is True and after["interval"] == 600, after
+    assert after["url"] == "http://127.0.0.1:9/health", after
+
+    # 地址不可达时应记录失败而不是抛 500
+    ping = client.post("/api/keepalive/ping")
+    assert ping.status_code == 200, ping.text
+    assert ping.json()["last_ok"] is False
+    assert ping.json()["fail_streak"] >= 1
+
+    # 非法间隔要落到合法区间（低于 60 秒被抬到 60）
+    assert client.put("/api/settings", json={"keepalive_interval": "10"}).status_code == 200
+    assert client.get("/api/keepalive").json()["interval"] == 60
+
+print("冒烟测试通过：健康检查、鉴权、群组 CRUD、cron 校验、设置保存、保活自检均正常")
