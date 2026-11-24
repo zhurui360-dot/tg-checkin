@@ -341,9 +341,14 @@
             <span class="muted" id="githubState">未配置</span>
           </div>
           <p class="muted" style="margin:0 0 14px">每次备份作为一次 commit 推到仓库，天然带版本历史，还能拿 GitHub 当免费的对象存储。建议用一个私有仓库专门放备份。</p>
+          <p class="muted" style="margin:0 0 14px">
+            没有 Token？
+            <a id="githubTokenLink" href="https://github.com/settings/personal-access-tokens/new?name=tg-checkin-backup&amp;description=tg-checkin%20%E8%87%AA%E5%8A%A8%E5%A4%87%E4%BB%BD&amp;expires_in=90&amp;contents=write" target="_blank" rel="noopener noreferrer">点这里一键生成</a>
+            —— 名称、有效期（90 天）和权限（Contents: Read and write）都已在链接里预填，打开后只需在「Repository access」选 <b>Only select repositories</b> 勾上备份仓库，再点 <b>Generate token</b> 复制回来。
+          </p>
           <form id="githubForm" class="form-grid">
-            <label class="field span-2"><span>Personal Access Token（需要 repo 权限）</span>
-              <input name="github_token" type="password" placeholder="ghp_... 留空表示不修改">
+            <label class="field span-2"><span>Personal Access Token（Fine-grained，Contents 读写）</span>
+              <input name="github_token" type="password" placeholder="github_pat_... 留空表示不修改">
             </label>
             <label class="field"><span>仓库</span><input name="github_repo" placeholder="yourname/tg-checkin-data"></label>
             <label class="field"><span>分支</span><input name="github_branch" placeholder="main"></label>

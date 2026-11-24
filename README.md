@@ -430,9 +430,11 @@ docker cp tg-checkin:/app/data/backups/. ./backups/
 ### GitHub 怎么填
 
 1. 建一个**私有**仓库专门放备份（公开仓库等于把会话泄露出去）
-2. 生成 Personal Access Token：`Settings → Developer settings → Personal access tokens → Fine-grained tokens`，权限只勾该仓库的 `Contents: Read and write`
+2. 生成 Personal Access Token：面板「GitHub 同步」里点 **「点这里一键生成」**，名称、有效期、`Contents: Read and write` 都已经预填好了，打开后只需在 `Repository access` 选 **Only select repositories** 勾上备份仓库，再点 Generate token
 3. 面板填：Token、仓库 `owner/repo`、分支 `main`、目录 `tgck-backups`
 4. 点「测试连接」，显示「私有仓库」就对了
+
+> 想手动创建也可以：`Settings → Developer settings → Personal access tokens → Fine-grained tokens`，权限只勾该仓库的 `Contents: Read and write`。一键链接用的是同一套官方 URL 参数，只是把字段填好了。
 
 每次备份会作为一次 commit，历史里能回滚到任意一份。
 
