@@ -36,8 +36,8 @@
 **备份与恢复**
 - 一键下载完整备份（群组 + 账号 + 机器人 + 全部设置 + 登录会话），单个 JSON
 - 从文件恢复，可选「替换」或「合并」；账号/机器人自增 ID 会自动重映射，群组绑定不会指错人
-- **WebDAV 云备份**：坚果云、Nextcloud、群晖、InfiniCLOUD 等，支持自动上传与份数裁剪
-- **GitHub 同步**：每次备份作为一次 commit 推到仓库，天然带版本历史
+- **WebDAV 云备份**：坚果云、Nextcloud、群晖、InfiniCLOUD 等，支持自定义备份文件夹（保存时自动创建，多级也行）、自动上传与份数裁剪
+- **GitHub 同步**：每次备份作为一次 commit 推到仓库，天然带版本历史；仓库地址可直接粘浏览器链接，404 时会反查 Token 能访问哪些仓库并给出正确写法
 - **启动时自动恢复**：容器重建后本地为空时，自动从云端拉最新备份接回来
 
 ## 一、准备 Telegram API 凭据（仅「用自己的账号签到」需要）
@@ -438,22 +438,24 @@ docker cp tg-checkin:/app/data/backups/. ./backups/
 
 ### WebDAV 怎么填
 
-以坚果云为例：地址填 `https://dav.jianguoyun.com/dav/你的目录`，用户名是登录邮箱，密码用「应用密码」（在账户信息 → 安全选项里生成，不是登录密码）。目录不存在时会自动建一层。
+以坚果云为例：地址填 WebDAV 入口 `https://dav.jianguoyun.com/dav/`，用户名是登录邮箱，密码用「应用密码」（在账户信息 → 安全选项里生成，不是登录密码）。
 
-群晖、Nextcloud 都类似，地址填到目录为止。填完点「测试连接」，能看到「连接成功，目录里已有 N 个备份」就算通了。
+「备份文件夹」是可选的一栏：留空就直接放上面那个地址里；填 `tg-checkin` 就在地址下建一个同名文件夹、备份全放里面，填 `backup/tgck` 这种多级路径也支持。**点保存时会自动在云端把文件夹建好**（缺失的每一级都会补），不用先去网页端手动新建。
+
+群晖、Nextcloud 都类似，地址填到目录为止。填完点「保存设置」或「测试连接」，能看到「连接成功，已自动创建文件夹：…」就算通了。
 
 ### GitHub 怎么填
 
 1. 建一个**私有**仓库专门放备份（公开仓库等于把会话泄露出去）
 2. 生成 Personal Access Token：面板「GitHub 同步」里点 **「点这里一键生成」**，名称、有效期、`Contents: Read and write` 都已经预填好了，打开后只需在 `Repository access` 选 **Only select repositories** 勾上备份仓库，再点 Generate token
-3. 面板填：Token、仓库 `owner/repo`、分支 `main`、目录 `tgck-backups`
+3. 面板填：Token、仓库 `owner/repo`、分支 `main`、目录 `tgck-backups`（仓库这一栏也可以直接粘 `https://github.com/owner/repo`，会自动截成 `owner/repo`）
 4. 点「测试连接」，显示「私有仓库」就对了
 
 > 想手动创建也可以：`Settings → Developer settings → Personal access tokens → Fine-grained tokens`，权限只勾该仓库的 `Contents: Read and write`。一键链接用的是同一套官方 URL 参数，只是把字段填好了。
 
 每次备份会作为一次 commit，历史里能回滚到任意一份。
 
-> 报「GitHub 不认这个 Token」= token 过期或被撤销；报「没有 repo 权限」= token 权限不够；报 404 = 仓库名写错或 token 没有该仓库权限。面板会把这些翻成人话显示。
+> 报「GitHub 不认这个 Token」= token 过期或被撤销；报「没有 repo 权限」= token 权限不够。报「找不到仓库」时，程序会用你的 Token 反查它**实际能访问哪些仓库**，直接告诉你仓库名该怎么写、或者是不是 `Repository access` 没勾上——GitHub 对「仓库不存在」和「没权限」回的是同一个 404，光看状态码分不出来。
 
 ## 八、常见问题
 
@@ -528,11 +530,11 @@ docker compose restart
 
 **13. WebDAV 测试连接失败**
 
-按报错对应处理：`401` 是用户名或应用密码不对（坚果云要用「应用密码」，不是登录密码）；`403` 是这个账号对目标目录没有写权限；`404` 一般是地址少写了层级，注意要填到目录为止、末尾带 `/`；`405` 说明填的是网页首页而不是 WebDAV 入口，坚果云是 `https://dav.jianguoyun.com/dav/`。另外第一次写入时如果目录不存在，程序会自己 `MKCOL` 建一级目录，不会建多级，所以地址里别带太深的子目录。
+按报错对应处理：`401` 是用户名或应用密码不对（坚果云要用「应用密码」，不是登录密码）；`403` 是这个账号对目标目录没有写权限；`404` 是地址层级不对，注意「WebDAV 地址」填到目录为止，要新建的子文件夹写在「备份文件夹」那一栏（保存时会自动逐级 `MKCOL` 建出来）；`405` 说明填的是网页首页而不是 WebDAV 入口，坚果云是 `https://dav.jianguoyun.com/dav/`。
 
 **14. GitHub 同步报错**
 
-`401` 是 Token 失效或被撤销，重新生成；`403` 是 Token 没有 `repo` 权限（Fine-grained token 需要 `Contents: Read and write`）或触发了速率限制；`404` 是仓库名写错、或者 Token 没有被授权访问这个仓库——注意私有仓库必须显式授权。仓库名写成 `owner/repo`，不要带 `https://github.com/` 前缀。
+`401` 是 Token 失效或被撤销，重新生成；`403` 是 Token 没有 `Contents: Read and write` 权限，或触发了速率限制；`404` 表示 GitHub 找不到这个仓库——它把「仓库不存在」和「Token 没被授权访问」都算成 404，所以程序会在报错里列出这个 Token 实际能访问的仓库，照它说的改就行。私有仓库必须在 Token 的 `Repository access` 里显式勾上。仓库名写 `owner/repo` 即可，粘带 `https://github.com/` 的完整链接也能自动识别。
 
 **15. 在免费 PaaS 上重启后数据全没了**
 

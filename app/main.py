@@ -170,6 +170,7 @@ def bootstrap(_: None = Depends(require_auth)) -> dict[str, Any]:
             "backup_keep": settings.get("backup_keep", "14"),
             "backup_restore_on_boot": settings.get("backup_restore_on_boot", "1"),
             "webdav_url": settings.get("webdav_url", ""),
+            "webdav_dir": settings.get("webdav_dir", ""),
             "webdav_username": settings.get("webdav_username", ""),
             "webdav_password": mask(settings.get("webdav_password", "")),
             "webdav_auto": settings.get("webdav_auto", "0"),
@@ -379,7 +380,7 @@ SETTING_KEYS = {
     "ai_proxy",
     # 备份 / 恢复
     "backup_auto", "backup_interval", "backup_keep", "backup_restore_on_boot",
-    "webdav_url", "webdav_username", "webdav_password", "webdav_auto", "webdav_keep",
+    "webdav_url", "webdav_dir", "webdav_username", "webdav_password", "webdav_auto", "webdav_keep",
     "github_token", "github_repo", "github_branch", "github_path",
     "github_auto", "github_keep",
 }
@@ -442,6 +443,11 @@ def update_settings(body: dict[str, Any], _: None = Depends(require_auth)) -> di
             raise HTTPException(status_code=400, detail="bot_trigger 只能是 mention / all / private")
         if key == "checkin_mode" and value not in ("bot", "user"):
             raise HTTPException(status_code=400, detail="checkin_mode 只能是 bot / user")
+        if key == "webdav_dir":
+            try:
+                value = backup.normalize_webdav_dir(value)
+            except backup.BackupError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
         if key == "ai_agent_id" and value:
             if not value.isdigit() or not db.get_agent(int(value)):
                 raise HTTPException(status_code=400, detail="指定的 AI 智能体不存在")
@@ -469,7 +475,20 @@ def update_settings(body: dict[str, Any], _: None = Depends(require_auth)) -> di
     if changed & {"backup_auto", "backup_interval"}:
         if db.get_setting("backup_auto", "0") == "1":
             backup.start_auto()
-    return {"ok": True}
+    result: dict[str, Any] = {"ok": True}
+    # 地址或文件夹刚填好，就把云端目录建出来，省得用户再去别处手动新建
+    if changed & {"webdav_url", "webdav_dir", "webdav_username", "webdav_password"}:
+        if db.get_setting("webdav_url", "").strip():
+            try:
+                info = backup.webdav_ensure_dir()
+                result["webdav"] = {
+                    "ok": True,
+                    "dir": info["dir"],
+                    "created": len(info.get("created") or []),
+                }
+            except backup.BackupError as exc:
+                result["webdav"] = {"ok": False, "error": str(exc)}
+    return result
 
 
 # ---------------- 保活自检 ----------------
@@ -1143,7 +1162,7 @@ EXPORT_KEYS = {
     "known_chats",
     # 备份 / 云备份：一起带走，换平台时新容器能直接接上
     "backup_auto", "backup_interval", "backup_keep", "backup_restore_on_boot",
-    "webdav_url", "webdav_username", "webdav_password", "webdav_auto", "webdav_keep",
+    "webdav_url", "webdav_dir", "webdav_username", "webdav_password", "webdav_auto", "webdav_keep",
     "github_token", "github_repo", "github_branch", "github_path",
     "github_auto", "github_keep",
 }

@@ -402,7 +402,7 @@ def _explain_http(code: int, body: str, kind: str) -> str:
         if code == 403:
             return "WebDAV 拒绝访问：这个账号没有写入该目录的权限"
         if code == 404:
-            return "WebDAV 目录不存在，检查地址是否少写了层级"
+            return "WebDAV 目录不存在：检查地址是否少写了层级（填了文件夹的话程序会自动创建，失败多半是上级目录没写权限）"
         if code == 405:
             return "这个地址不支持 WebDAV 的写入方法，确认填的是 WebDAV 入口（不是网页首页）"
     # 兜底：剥掉 JSON 的引号和换行，只留一句话
@@ -450,11 +450,29 @@ def _webdav_conf() -> dict[str, str]:
         "url": db.get_setting("webdav_url", "").strip(),
         "username": db.get_setting("webdav_username", "").strip(),
         "password": db.get_setting("webdav_password", ""),
+        "dir": db.get_setting("webdav_dir", "").strip(),
     }
 
 
 def _webdav_auth(conf: dict[str, str]) -> tuple[str, str] | None:
     return (conf["username"], conf["password"]) if conf["username"] else None
+
+
+def _clean_subdir(raw: str) -> str:
+    """把用户填的文件夹名规整成 a/b 这种相对路径；不合法就报错。"""
+    text = str(raw or "").strip().replace("\\", "/")
+    parts = [part.strip() for part in text.split("/") if part.strip()]
+    if any(part in (".", "..") for part in parts):
+        raise BackupError("备份文件夹不能写 . 或 .. 这种相对路径")
+    for part in parts:
+        if not re.match(r"^[\w\-.@ ]+$", part):
+            raise BackupError(f"备份文件夹「{part}」有不能用的字符，只用字母、数字、下划线、横线、点和空格")
+    return "/".join(parts)
+
+
+def normalize_webdav_dir(raw: str) -> str:
+    """把面板上填的备份文件夹规整成 a/b；保存设置时用它提前发现非法字符。"""
+    return _clean_subdir(raw)
 
 
 def _webdav_dir(conf: dict[str, str]) -> str:
@@ -463,7 +481,66 @@ def _webdav_dir(conf: dict[str, str]) -> str:
         raise BackupError("还没填 WebDAV 地址（在「WebDAV 云备份」里填好后保存）")
     if not url.startswith(("http://", "https://")):
         raise BackupError("WebDAV 地址要以 http:// 或 https:// 开头")
-    return url.rstrip("/") + "/"
+    base = url.rstrip("/") + "/"
+    sub = _clean_subdir(conf.get("dir") or "")
+    return base + sub + "/" if sub else base
+
+
+def _webdav_url_at(base: str, depth: int) -> str:
+    """取 base 的第 depth 级祖先地址（depth=0 就是站点根）。"""
+    parts = urllib.parse.urlsplit(base)
+    segments = [seg for seg in parts.path.split("/") if seg]
+    path = "/" + "/".join(segments[:depth])
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, path + "/", "", ""))
+
+
+def _webdav_mkdirs(base: str, auth: tuple[str, str] | None) -> list[str]:
+    """保证 base 这一串目录都存在，缺哪级建哪级，返回本次新建的目录。
+
+    先自下而上找一个「已存在」的祖先，再自上而下逐级 MKCOL：
+    坚果云 / Nextcloud 这类服务对不存在的父目录直接 PUT 会 409，
+    而 WebDAV 没有 mkdir -p，只能一级一级来。
+    """
+    parts = urllib.parse.urlsplit(base)
+    depth = len([seg for seg in parts.path.split("/") if seg])
+    existing = 0
+    for level in range(depth, -1, -1):
+        try:
+            _http(
+                "PROPFIND",
+                _webdav_url_at(base, level),
+                headers={"Depth": "0"},
+                auth=auth,
+                timeout=15,
+                kind="webdav",
+            )
+            existing = level
+            break
+        except BackupError as exc:
+            if exc.code in (404, 409):
+                continue
+            # 401/403 之类不该当成「目录不存在」，交给后面的 MKCOL 抛出真实原因
+            existing = level
+            break
+    created: list[str] = []
+    for level in range(existing + 1, depth + 1):
+        target = _webdav_url_at(base, level)
+        try:
+            _http("MKCOL", target, auth=auth, timeout=20, kind="webdav")
+            created.append(target)
+        except BackupError as exc:
+            if exc.code in (200, 201, 301, 302, 405):
+                continue  # 已经存在
+            raise
+    return created
+
+
+def webdav_ensure_dir() -> dict[str, Any]:
+    """按当前设置把云端的备份文件夹建出来（幂等）。"""
+    conf = _webdav_conf()
+    base = _webdav_dir(conf)
+    created = _webdav_mkdirs(base, _webdav_auth(conf))
+    return {"ok": True, "dir": base, "created": created}
 
 
 def webdav_test() -> dict[str, Any]:
@@ -472,17 +549,28 @@ def webdav_test() -> dict[str, Any]:
         raise BackupError("还没填 WebDAV 地址")
     base = _webdav_dir(conf)
     auth = _webdav_auth(conf)
+    # 地址或文件夹是刚填的，先把它建出来；连不上会在这里就抛出真实原因
+    created = _webdav_mkdirs(base, auth)
     status, _ = _http(
         "PROPFIND", base, headers={"Depth": "0"}, auth=auth, timeout=20, kind="webdav"
     )
     files = webdav_list()
+    sub = _clean_subdir(conf.get("dir") or "")
+    if created and sub:
+        hint = f"连接成功，已自动创建文件夹「{sub}」，里面现有 {len(files)} 个备份"
+    elif sub:
+        hint = f"连接成功，文件夹「{sub}」已就绪，里面现有 {len(files)} 个备份"
+    else:
+        hint = f"连接成功，目录里已有 {len(files)} 个备份"
     return {
         "ok": True,
         "status": status,
         "dir": base,
+        "subdir": sub,
+        "created": created,
         "count": len(files),
         "files": files[:5],
-        "message": f"连接成功，目录里已有 {len(files)} 个备份",
+        "message": hint,
     }
 
 
@@ -533,12 +621,8 @@ def webdav_upload(bundle: dict[str, Any] | None = None) -> dict[str, Any]:
     except BackupError as exc:
         if exc.code not in (404, 409):
             raise
-        # 目录不存在就建一层，再重试一次
-        try:
-            _http("MKCOL", base, auth=auth, timeout=20, kind="webdav")
-        except BackupError as mk:
-            if mk.code != 405:  # 405 = 目录已存在，可以忽略
-                raise
+        # 目录不存在就把整串目录补齐，再重试一次
+        _webdav_mkdirs(base, auth)
         _http(
             "PUT",
             base + name,
@@ -549,7 +633,7 @@ def webdav_upload(bundle: dict[str, Any] | None = None) -> dict[str, Any]:
             kind="webdav",
         )
     prune_webdav()
-    return {"ok": True, "name": name, "size": len(payload)}
+    return {"ok": True, "name": name, "size": len(payload), "dir": base}
 
 
 def webdav_download(name: str) -> dict[str, Any]:
@@ -610,30 +694,137 @@ def _github_headers(conf: dict[str, str]) -> dict[str, str]:
     }
 
 
-def _github_repo(conf: dict[str, str]) -> str:
-    repo = conf["repo"]
-    if not repo:
+def _normalize_repo(raw: str) -> str:
+    """把各种写法统一成 owner/repo。
+
+    允许直接粘贴网页地址（https://github.com/me/data）、git 地址
+    （git@github.com:me/data.git）或末尾带子目录的地址，
+    免得用户照着浏览器地址栏抄一份就报「找不到仓库」。
+    """
+    text = str(raw or "").strip()
+    if not text:
         raise BackupError("还没填 GitHub 仓库（写成 owner/repo）")
-    if not re.match(r"^[\w.\-]+/[\w.\-]+$", repo):
+    text = re.sub(r"^[a-z]+://[^/]+/", "", text, flags=re.I)  # 去掉 https://github.com/
+    text = re.sub(r"^[^@/]+@[^:]+:", "", text)  # 去掉 git@github.com:
+    text = text.split("?")[0].split("#")[0].strip("/")
+    if text.lower().endswith(".git"):
+        text = text[:-4]
+    parts = [part for part in text.split("/") if part]
+    if parts and re.match(r"^[\w\-]+\.[a-z]{2,}$", parts[0], re.I):
+        parts = parts[1:]  # 用户只写了 github.com/owner/repo
+    if len(parts) >= 2:
+        text = f"{parts[0]}/{parts[1]}"
+    elif parts:
+        text = parts[0]
+    if not re.match(r"^[\w.\-]+/[\w.\-]+$", text):
         raise BackupError("GitHub 仓库要写成 owner/repo，例如 yourname/tg-checkin-data")
-    return repo
+    return text
+
+
+def _github_repo(conf: dict[str, str]) -> str:
+    return _normalize_repo(conf["repo"])
+
+
+def _github_login(conf: dict[str, str]) -> str:
+    """这个 Token 属于谁——排查 owner 写错时很有用。"""
+    try:
+        _, body = _http(
+            "GET", f"{GITHUB_API}/user", headers=_github_headers(conf), timeout=15, kind="github"
+        )
+        return str(json.loads(body.decode("utf-8") or "{}").get("login") or "")
+    except (BackupError, ValueError):
+        return ""
+
+
+def _github_accessible(conf: dict[str, str]) -> list[str]:
+    """Token 实际能看到的仓库（细粒度 Token 只会列出被授权的那些）。"""
+    url = (
+        f"{GITHUB_API}/user/repos?per_page=100&sort=updated"
+        "&affiliation=owner,collaborator,organization_member"
+    )
+    try:
+        _, body = _http("GET", url, headers=_github_headers(conf), timeout=20, kind="github")
+        data = json.loads(body.decode("utf-8") or "[]")
+    except (BackupError, ValueError):
+        return []
+    return [
+        str(item.get("full_name") or "")
+        for item in data
+        if isinstance(item, dict) and item.get("full_name")
+    ]
+
+
+def _github_404_detail(repo: str, login: str, conf: dict[str, str]) -> str:
+    """GitHub 对「不存在」和「没权限」都回 404，这里替用户分辨清楚。"""
+    _, _, name = repo.partition("/")
+    visible = _github_accessible(conf)
+    for full in visible:
+        if full.lower() == repo.lower():
+            return f"仓库名大小写不对：GitHub 上正确的是「{full}」，改成它就行"
+    same_name = [item for item in visible if item.split("/")[-1].lower() == name.lower()]
+    if same_name:
+        return f"找不到「{repo}」，但这个 Token 能访问「{same_name[0]}」——owner 写错了，改成它"
+    who = f"（Token 属于 {login}）" if login else ""
+    if not visible:
+        return (
+            f"找不到「{repo}」{who}，而且这个 Token 连一个仓库都列不出来。"
+            "如果是细粒度 Token，需要在创建时把 Repository access 设为 "
+            "Only select repositories 并勾上这个仓库（权限至少 Contents: Read and write）；"
+            "私有仓库对没授权的 Token 一律返回「找不到」。"
+        )
+    sample = "、".join(visible[:5]) + ("…" if len(visible) > 5 else "")
+    return (
+        f"找不到「{repo}」{who}。这个 Token 现在能看到：{sample}。"
+        "先在 GitHub 上把仓库建好（空仓库也可以），再确认 Token 的 Repository access 勾选了它。"
+    )
+
+
+def _github_branch_exists(conf: dict[str, str], repo: str) -> bool:
+    branch = urllib.parse.quote(conf["branch"], safe="")
+    try:
+        _http(
+            "GET",
+            f"{GITHUB_API}/repos/{repo}/branches/{branch}",
+            headers=_github_headers(conf),
+            timeout=15,
+            kind="github",
+        )
+        return True
+    except BackupError as exc:
+        if exc.code == 404:
+            return False
+        raise
 
 
 def github_test() -> dict[str, Any]:
     conf = _github_conf()
     repo = _github_repo(conf)
-    status, body = _http(
-        "GET", f"{GITHUB_API}/repos/{repo}", headers=_github_headers(conf), timeout=20,
-        kind="github",
-    )
+    login = _github_login(conf)
+    try:
+        status, body = _http(
+            "GET", f"{GITHUB_API}/repos/{repo}", headers=_github_headers(conf), timeout=20,
+            kind="github",
+        )
+    except BackupError as exc:
+        if exc.code == 404:
+            raise BackupError(_github_404_detail(repo, login, conf), code=404)
+        raise
     info = json.loads(body.decode("utf-8") or "{}")
+    default_branch = str(info.get("default_branch") or "main")
+    if not _github_branch_exists(conf, repo):
+        raise BackupError(
+            f"仓库没问题，但分支「{conf['branch']}」不存在——这个仓库的默认分支是"
+            f"「{default_branch}」，把「分支」改成它再保存",
+            code=404,
+        )
     files = github_list()
     return {
         "ok": True,
         "status": status,
         "repo": repo,
+        "login": login,
         "branch": conf["branch"],
-        "default_branch": info.get("default_branch", ""),
+        "default_branch": default_branch,
         "private": bool(info.get("private")),
         "count": len(files),
         "message": f"连接成功，{conf['path']} 里已有 {len(files)} 个备份",
@@ -882,15 +1073,28 @@ def auto_restore_on_boot() -> None:
             log.warning("从 %s 恢复 %s 失败：%s", label, name, exc)
 
 
+def _status_repo(raw: str) -> str:
+    try:
+        return _normalize_repo(raw) if raw else ""
+    except BackupError:
+        return raw
+
+
 def status() -> dict[str, Any]:
     conf_dav = _webdav_conf()
     conf_gh = _github_conf()
+    try:
+        dav_dir = _webdav_dir(conf_dav) if conf_dav["url"] else ""
+    except BackupError:
+        dav_dir = ""
     return {
         "auto": auto_status(),
         "local": list_local()[:20],
         "webdav": {
             "configured": bool(conf_dav["url"]),
             "url": conf_dav["url"],
+            "dir": conf_dav["dir"],
+            "full_dir": dav_dir,
             "username": conf_dav["username"],
             "password_set": bool(conf_dav["password"]),
             "auto": db.get_setting("webdav_auto", "0") == "1",
@@ -898,7 +1102,7 @@ def status() -> dict[str, Any]:
         },
         "github": {
             "configured": bool(conf_gh["repo"] and conf_gh["token"]),
-            "repo": conf_gh["repo"],
+            "repo": _status_repo(conf_gh["repo"]),
             "branch": conf_gh["branch"],
             "path": conf_gh["path"],
             "token_set": bool(conf_gh["token"]),

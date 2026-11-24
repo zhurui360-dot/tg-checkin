@@ -8,6 +8,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ["DATA_DIR"] = tempfile.mkdtemp(prefix="tgck-test-")
 os.environ.setdefault("PANEL_PASSWORD", "admin123")
+# 测试里会连本地假 WebDAV，别让系统代理插一脚
+os.environ["no_proxy"] = "localhost,127.0.0.1"
+os.environ["NO_PROXY"] = "localhost,127.0.0.1"
 
 try:
     from fastapi.testclient import TestClient  # noqa: E402
@@ -503,4 +506,163 @@ with TestClient(app) as client:
     webdav_masked = client.get("/api/bootstrap").json()["settings"]["webdav_password"]
     assert "secret123" not in webdav_masked, webdav_masked
 
-print("冒烟测试通过：健康检查、鉴权、群组 CRUD、cron 校验、设置保存、保活自检、AI 机器人、多智能体、机器人签到、扫码登录、多账号、多机器人、补签、备份恢复均正常")
+    # ---------- WebDAV：设了文件夹就自动建出来 ----------
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    dav = {"dirs": {"/dav/"}, "files": {}, "mkcol": []}
+
+    class DavHandler(BaseHTTPRequestHandler):
+        """够用就好的假 WebDAV：PROPFIND / MKCOL / PUT / GET / DELETE。"""
+
+        protocol_version = "HTTP/1.0"
+
+        def log_message(self, *args):
+            pass
+
+        def _path(self):
+            return self.path.split("?", 1)[0]
+
+        def _body(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            return self.rfile.read(length) if length else b""
+
+        def _send(self, code, body=b"", ctype="text/xml; charset=utf-8"):
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if body:
+                self.wfile.write(body)
+
+        def do_PROPFIND(self):
+            self._body()
+            path = self._path()
+            if not path.endswith("/"):
+                path += "/"
+            if path not in dav["dirs"]:
+                return self._send(404, b"missing")
+            children = b"".join(
+                f"<d:response><d:href>{name}</d:href></d:response>".encode()
+                for name in sorted(dav["files"])
+                if name.rsplit("/", 1)[0] + "/" == path
+            )
+            body = (
+                b'<?xml version="1.0"?><d:multistatus xmlns:d="DAV:">'
+                + f"<d:response><d:href>{path}</d:href></d:response>".encode()
+                + children
+                + b"</d:multistatus>"
+            )
+            self._send(207, body)
+
+        def do_MKCOL(self):
+            path = self._path()
+            if not path.endswith("/"):
+                path += "/"
+            parent = path.rstrip("/").rsplit("/", 1)[0] + "/"
+            if path in dav["dirs"]:
+                return self._send(405, b"exists")
+            if parent not in dav["dirs"]:
+                return self._send(409, b"no parent")
+            dav["dirs"].add(path)
+            dav["mkcol"].append(path)
+            self._send(201, b"created")
+
+        def do_PUT(self):
+            data = self._body()
+            path = self._path()
+            if path.rsplit("/", 1)[0] + "/" not in dav["dirs"]:
+                return self._send(409, b"no parent")
+            dav["files"][path] = data
+            self._send(201, b"stored")
+
+        def do_GET(self):
+            path = self._path()
+            if path not in dav["files"]:
+                return self._send(404, b"missing")
+            self._send(200, dav["files"][path], "application/json")
+
+        def do_DELETE(self):
+            dav["files"].pop(self._path(), None)
+            self._send(204)
+
+    dav_server = ThreadingHTTPServer(("127.0.0.1", 0), DavHandler)
+    dav_port = dav_server.server_address[1]
+    threading.Thread(target=dav_server.serve_forever, daemon=True).start()
+    dav_url = f"http://127.0.0.1:{dav_port}/dav"
+    try:
+        saved = client.put("/api/settings", json={
+            "webdav_url": dav_url,
+            "webdav_dir": "backup/tgck/",
+            "webdav_username": "davuser",
+            "webdav_password": "davpass",
+        })
+        assert saved.status_code == 200, saved.text
+        info = saved.json().get("webdav") or {}
+        assert info.get("ok") is True, saved.json()
+        # 保存设置这一步就把多级目录建好了
+        assert "/dav/backup/" in dav["dirs"], dav["dirs"]
+        assert "/dav/backup/tgck/" in dav["dirs"], dav["dirs"]
+        assert _db.get_setting("webdav_dir") == "backup/tgck"  # 结尾斜杠被规整掉
+
+        tested = client.post("/api/backup/webdav/test")
+        assert tested.status_code == 200, tested.text
+        assert tested.json()["dir"] == dav_url + "/backup/tgck/", tested.json()
+        assert tested.json()["subdir"] == "backup/tgck"
+
+        uploaded = client.post("/api/backup/webdav/upload")
+        assert uploaded.status_code == 200, uploaded.text
+        dav_name = uploaded.json()["name"]
+        assert f"/dav/backup/tgck/{dav_name}" in dav["files"], dav["files"].keys()
+        listed = client.get("/api/backup/webdav").json()["files"]
+        assert any(item["name"] == dav_name for item in listed), listed
+
+        # 非法文件夹名在保存阶段就要挡住，不能等上传才炸
+        assert client.put("/api/settings", json={"webdav_dir": "../etc"}).status_code == 400
+        assert client.put("/api/settings", json={"webdav_dir": "a$b"}).status_code == 400
+
+        client.put("/api/settings", json={"webdav_url": "", "webdav_dir": "", "webdav_auto": "0"})
+    finally:
+        dav_server.shutdown()
+        dav_server.server_close()
+
+    # ---------- GitHub：仓库写法容错 + 404 说清原因 ----------
+    from app import backup as _bk
+
+    assert _bk._normalize_repo("https://github.com/alice/tg-checkin-data") == "alice/tg-checkin-data"
+    assert _bk._normalize_repo("git@github.com:alice/tg-checkin-data.git") == "alice/tg-checkin-data"
+    assert _bk._normalize_repo("github.com/alice/tg-checkin-data/tree/main") == "alice/tg-checkin-data"
+    assert _bk._normalize_repo(" alice/tg-checkin-data/ ") == "alice/tg-checkin-data"
+    try:
+        _bk._normalize_repo("只有一个名字")
+    except _bk.BackupError:
+        pass
+    else:
+        raise AssertionError("仓库名写成一段时应该报错")
+
+    real_http = _bk._http
+
+    def fake_http(method, url, *args, **kwargs):
+        """假装 token 属于 alice，能访问 alice/tg-checkin-data。"""
+        if "/user/repos" in url:
+            return 200, b'[{"full_name": "alice/tg-checkin-data"}]'
+        if url.rstrip("/").endswith("/user"):
+            return 200, b'{"login": "alice"}'
+        raise _bk.BackupError("not found", code=404)
+
+    _bk._http = fake_http
+    try:
+        client.put("/api/settings", json={
+            "github_token": "github_pat_smoke", "github_repo": "alice/tg-checkin-dat",
+        })
+        wrong = client.post("/api/backup/github/test")
+        assert wrong.status_code == 400, wrong.text
+        detail = wrong.json()["detail"]
+        assert "alice/tg-checkin-data" in detail, detail
+        assert "Token" in detail, detail
+    finally:
+        _bk._http = real_http
+        _db.set_setting("github_token", "")
+        _db.set_setting("github_repo", "")
+
+print("冒烟测试通过：健康检查、鉴权、群组 CRUD、cron 校验、设置保存、保活自检、AI 机器人、多智能体、机器人签到、扫码登录、多账号、多机器人、补签、备份恢复、WebDAV 自动建目录、GitHub 仓库诊断均正常")

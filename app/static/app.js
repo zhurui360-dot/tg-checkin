@@ -48,12 +48,13 @@
   }
 
   let toastTimer = null;
-  function toast(message, kind = "") {
+  function toast(message, kind = "", duration = 0) {
     const el = $("toast");
     el.textContent = message;
     el.className = "toast " + kind;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => el.classList.add("hidden"), 4200);
+    // 报错信息通常更长（比如 GitHub 的诊断），多留点时间让人看完
+    toastTimer = setTimeout(() => el.classList.add("hidden"), duration || (kind === "err" ? 7000 : 4200));
   }
 
   async function api(path, options = {}) {
@@ -612,8 +613,9 @@
     parts.push(auto.restore_on_boot ? "容器重建后会自动从云端拉回数据" : "启动时自动恢复已关闭");
     text.textContent = parts.join(" · ") + "。";
 
-    $("webdavState").textContent = info.webdav && info.webdav.configured
-      ? (info.webdav.auto ? "已配置 · 自动上传" : "已配置 · 仅手动")
+    const dav = info.webdav || {};
+    $("webdavState").textContent = dav.configured
+      ? `${dav.auto ? "已配置 · 自动上传" : "已配置 · 仅手动"}${dav.dir ? " · " + dav.dir : ""}`
       : "未配置";
     $("githubState").textContent = info.github && info.github.configured
       ? (info.github.auto ? "已配置 · 自动同步" : "已配置 · 仅手动")
@@ -676,7 +678,7 @@
     const s = data.settings || {};
     const map = {
       backupForm: ["backup_auto", "backup_interval", "backup_keep", "backup_restore_on_boot"],
-      webdavForm: ["webdav_url", "webdav_username", "webdav_auto", "webdav_keep"],
+      webdavForm: ["webdav_url", "webdav_dir", "webdav_username", "webdav_auto", "webdav_keep"],
       githubForm: ["github_repo", "github_branch", "github_path", "github_auto", "github_keep"],
     };
     Object.entries(map).forEach(([formId, keys]) => {
@@ -705,7 +707,7 @@
     keys.forEach((key) => {
       if (form.elements[key]) payload[key] = form.elements[key].value.trim();
     });
-    await api("/api/settings", { method: "PUT", body: payload });
+    return api("/api/settings", { method: "PUT", body: payload });
   }
 
   async function restoreFromCloud(kind, name, btn) {
@@ -1643,12 +1645,21 @@
     $("webdavForm").addEventListener("submit", async (e) => {
       e.preventDefault();
       try {
-        await saveBackupSettings("webdavForm", [
-          "webdav_url", "webdav_username", "webdav_password", "webdav_auto", "webdav_keep",
+        const result = await saveBackupSettings("webdavForm", [
+          "webdav_url", "webdav_dir", "webdav_username", "webdav_password",
+          "webdav_auto", "webdav_keep",
         ]);
         $("webdavForm").elements.webdav_password.value = "";
-        toast("WebDAV 设置已保存", "ok");
         await loadBackupPanel();
+        const info = result && result.webdav;
+        if (info && info.ok) {
+          toast(info.created ? `设置已保存，已自动创建文件夹：${info.dir}` : `设置已保存，文件夹已就绪：${info.dir}`, "ok");
+          await loadWebdavFiles(true);
+        } else if (info && info.ok === false) {
+          toast(`设置已保存，但文件夹没建成：${info.error}`, "err");
+        } else {
+          toast("WebDAV 设置已保存", "ok");
+        }
       } catch (err) { toast(err.message, "err"); }
     });
 
@@ -1691,8 +1702,17 @@
           "github_token", "github_repo", "github_branch", "github_path", "github_auto", "github_keep",
         ]);
         $("githubForm").elements.github_token.value = "";
-        toast("GitHub 设置已保存", "ok");
         await loadBackupPanel();
+        toast("GitHub 设置已保存", "ok");
+        if (!$("githubForm").elements.github_repo.value.trim()) return;
+        // 存完立刻验一次，仓库名/权限不对当场就能看到具体原因
+        try {
+          const info = await api("/api/backup/github/test", { method: "POST" });
+          toast(`${info.message || "连接成功"}${info.private ? "（私有仓库）" : ""}`, "ok");
+          await loadGithubFiles(true);
+        } catch (err) {
+          toast(`已保存，但连不上仓库：${err.message}`, "err");
+        }
       } catch (err) { toast(err.message, "err"); }
     });
 

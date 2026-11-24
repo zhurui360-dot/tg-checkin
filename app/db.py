@@ -71,6 +71,7 @@ DEFAULTS: dict[str, str] = {
     "backup_last_target": "",
     "backup_last_error": "",
     "webdav_url": "",
+    "webdav_dir": "",
     "webdav_username": "",
     "webdav_password": "",
     "webdav_auto": "0",
