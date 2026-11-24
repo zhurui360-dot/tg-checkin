@@ -18,7 +18,7 @@ from typing import Any, Callable, TypeVar
 # 同步版本。少了这一行，client.connect() / get_me() 只会返回协程而不执行，
 # 账号模式的登录、签到全部静默失效（历史上踩过这个坑）。
 import telethon.sync  # noqa: F401  isort:skip
-from telethon import TelegramClient, errors as tg_errors
+from telethon import TelegramClient, errors as tg_errors, functions, types
 from telethon.sessions import StringSession
 
 from . import db
@@ -115,6 +115,15 @@ def friendly_error(exc: BaseException) -> str:
     chat_invalid = getattr(tg_errors, "ChatInvalidError", tg_errors.ChannelInvalidError)
     if isinstance(exc, (tg_errors.ChannelInvalidError, chat_invalid)):
         return "无法访问该群组，请确认账号已加入该群且 ID/链接正确"
+    if isinstance(exc, tg_errors.ChatAdminRequiredError):
+        return (
+            "这个目标你在里面没有发言权限：它可能是「频道」而不是群，"
+            "或者群把发言权限限制成了管理员。请把群组改成 -100 开头的群 ID（或群链接 https://t.me/c/<数字>/1）"
+        )
+    if isinstance(exc, tg_errors.ChatWriteForbiddenError):
+        return "你在这个群里被禁言了，或者群设置了「仅管理员可发言」"
+    if isinstance(exc, tg_errors.ChannelPrivateError):
+        return "这个群/频道是私有的，你的账号还没加入，先在 Telegram 里加入再签到"
     if isinstance(exc, tg_errors.SessionPasswordNeededError):
         return "账号启用了两步验证，登录时需要填写验证密码"
     if isinstance(exc, tg_errors.PhoneCodeInvalidError):
@@ -124,6 +133,62 @@ def friendly_error(exc: BaseException) -> str:
     if isinstance(exc, tg_errors.AuthKeyUnregisteredError):
         return "会话已失效，请重新登录 Telegram 账号"
     return f"{type(exc).__name__}: {exc}"
+
+
+_PERMISSION_ERRORS = tuple(
+    getattr(tg_errors, name)
+    for name in (
+        "ChatAdminRequiredError",
+        "ChatWriteForbiddenError",
+        "ChannelPrivateError",
+        "ChatForbiddenError",
+    )
+    if hasattr(tg_errors, name)
+)
+
+
+def is_permission_error(exc: BaseException) -> bool:
+    """权限类错误重试也没用（再发 10 次还是没权限），要立刻换方式或提示用户改配置。"""
+    if isinstance(exc, BotApiError):
+        text = str(exc)
+        return any(k in text for k in ("权限", "管理员", "找不到", "不在群", "已被踢出"))
+    return isinstance(exc, _PERMISSION_ERRORS)
+
+
+def _resolve_entity(client: Any, chat: str) -> tuple[Any, str]:
+    """把群组配置解析成可发送的目标。
+
+    传进来的是频道链接（例如 https://t.me/dnshecom）时，直接发频道会报
+    CHAT_ADMIN_REQUIRED；这里自动改发到该频道的关联讨论群，并返回一句说明。
+    """
+    entity = client.get_entity(normalize_chat(chat))
+    if not (isinstance(entity, types.Channel) and getattr(entity, "broadcast", True)):
+        return entity, ""
+
+    linked_id = getattr(entity, "linked_chat_id", None)
+    if not linked_id:
+        try:
+            full = client(functions.channels.GetFullChannelRequest(channel=entity))
+            linked_id = getattr(full.full_chat, "linked_chat_id", None)
+        except Exception:
+            linked_id = None
+    if not linked_id:
+        raise RuntimeError(
+            f"「{getattr(entity, 'title', chat)}」是频道，账号不是管理员没法在里面发言。"
+            "请把群组改成 -100 开头的群 ID（群链接形如 https://t.me/c/<数字>/1）"
+        )
+
+    group_entity = None
+    for peer in (types.PeerChannel(linked_id), types.InputPeerChannel(linked_id, 0)):
+        try:
+            group_entity = client.get_entity(peer)
+            break
+        except Exception:
+            group_entity = None
+    if group_entity is None:
+        raise RuntimeError("识别到了频道，但拿不到它的讨论群，请直接把群组改成 -100 开头的群 ID")
+    title = getattr(group_entity, "title", str(linked_id))
+    return group_entity, f"链接指向频道「{getattr(entity, 'title', chat)}」，已自动改发到关联讨论群「{title}」"
 
 
 # ---------------- 账号状态 ----------------
@@ -491,12 +556,13 @@ def _send_checkin(group: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
         if not client.is_user_authorized():
             raise RuntimeError("Telegram 账号未登录或会话已失效，请到「账号与登录」重新登录")
 
-        entity = client.get_entity(normalize_chat(group["chat"]))
+        entity, hint = _resolve_entity(client, group["chat"])
         recent = client.get_messages(entity, limit=1)
         last_id = recent[0].id if recent else 0
 
         if str(cfg.get("dry_run", "0")) == "1":
-            return {"note": "模拟运行：已连接到群组，但未真正发送消息", "failed": False}
+            note = "模拟运行：已连接到群组，但未真正发送消息"
+            return {"note": f"{note}（{hint}）" if hint else note, "failed": False}
 
         message = client.send_message(entity, group["command"] or "/checkin")
         time.sleep(2)
@@ -511,6 +577,8 @@ def _send_checkin(group: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
         keywords = [k.strip() for k in str(cfg.get("fail_keywords", "")).split(",") if k.strip()]
         failed = any(any(k in text for k in keywords) for text in texts) if keywords else False
         note = " | ".join(texts[:3]) or "消息已发送，未捕获到机器人回复"
+        if hint:
+            note = f"{hint}｜{note}"
         return {"note": note, "message_id": message.id, "failed": failed}
     finally:
         try:
@@ -553,23 +621,50 @@ def execute_checkin(group_id: int, source: str = "auto") -> dict[str, Any]:
     started = time.time()
     result: dict[str, Any] | None = None
     error = ""
+    primary_error = ""
+    used_mode = mode
 
-    for attempt in range(1, retries + 2):
-        if jitter:
-            time.sleep(random.uniform(0, jitter))
-        try:
-            if mode == "user":
-                result = run_tg(_send_checkin, group, cfg)
-            else:
+    def run_mode(which: str) -> tuple[dict[str, Any] | None, str]:
+        """跑一种签到方式，返回 (结果, 错误)。权限类错误不重试，直接返回。"""
+        last_error = ""
+        for attempt in range(1, retries + 2):
+            if jitter:
+                time.sleep(random.uniform(0, jitter))
+            try:
+                if which == "user":
+                    return run_tg(_send_checkin, group, cfg), ""
                 from . import bot as bot_api
 
-                result = bot_api.checkin(group, cfg)
-            error = ""
-            break
-        except Exception as exc:
-            error = friendly_error(exc)
-            if attempt <= retries:
+                return bot_api.checkin(group, cfg), ""
+            except Exception as exc:
+                last_error = friendly_error(exc)
+                if is_permission_error(exc) or attempt > retries:
+                    return None, last_error
                 time.sleep(retry_delay)
+        return None, last_error
+
+    # 主方式失败时，只要另一种方式的条件也具备，就自动补一次（比如账号没权限就换机器人发）
+    modes = [mode]
+    other = "bot" if mode == "user" else "user"
+    if (other == "bot" and (cfg.get("bot_token") or "").strip()) or (
+        other == "user" and (cfg.get("session_string") or "").strip()
+    ):
+        modes.append(other)
+
+    for which in modes:
+        result, error = run_mode(which)
+        used_mode = which
+        if result is not None:
+            break
+        if not primary_error:
+            primary_error = error
+
+    if result is not None and used_mode != mode:
+        label = {"bot": "机器人", "user": "账号"}
+        error = (
+            f"{label.get(mode, mode)}方式失败（{primary_error}），已自动改用"
+            f"{label.get(used_mode, used_mode)}方式补发。"
+        )
 
     duration = int((time.time() - started) * 1000)
     failed_by_keyword = bool(result and result.get("failed"))
@@ -577,6 +672,8 @@ def execute_checkin(group_id: int, source: str = "auto") -> dict[str, Any]:
     note = (result or {}).get("note", "") or error
     if failed_by_keyword:
         note = "机器人回复命中失败关键词：" + note
+    if ok and used_mode != mode:
+        note = f"{error}｜{note}"
 
     db.add_log(group_id, group["name"], source, "success" if ok else "failed", note, duration)
 
@@ -584,7 +681,7 @@ def execute_checkin(group_id: int, source: str = "auto") -> dict[str, Any]:
         flag = "成功" if ok else "失败"
         text = f"[TG 签到] {group['name']} 签到{flag}\n备注：{note[:300]}"
         try:
-            if mode == "user":
+            if used_mode == "user":
                 run_tg(_notify, text)
             else:
                 from . import bot as bot_api
@@ -599,6 +696,7 @@ def execute_checkin(group_id: int, source: str = "auto") -> dict[str, Any]:
         "group_id": group_id,
         "group_name": group["name"],
         "source": source,
-        "mode": mode,
+        "mode": used_mode,
+        "mode_configured": mode,
         "duration": duration,
     }

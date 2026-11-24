@@ -769,11 +769,39 @@ def _group_error_hint(text: str, target: Any) -> str:
         return f"机器人不在群（{target}）里，请先把它拉进群"
     if "not enough rights" in lowered or "have no rights" in lowered or "chat_write_forbidden" in lowered:
         return f"机器人在群（{target}）里没有发言权限，请解除限制或给它管理员权限"
+    if "chat admin privileges" in lowered or "chat_admin_required" in lowered:
+        return (
+            f"这个目标（{target}）要求管理员权限：它可能是频道，或者群把发言限制成了管理员。"
+            "请改成 -100 开头的群 ID（群链接形如 https://t.me/c/<数字>/1）"
+        )
     if "bot was kicked" in lowered or "user is deactivated" in lowered:
         return f"机器人已被踢出群（{target}），请重新拉进去"
     if "too many requests" in lowered:
         return "Bot API 限流了，稍后再试"
     return text
+
+
+def _resolve_target(token: str, target: Any) -> tuple[Any, str]:
+    """用 getChat 看一眼目标：如果填的是频道，就改发到它的关联讨论群。
+
+    频道里发言必须是管理员，机器人/普通账号都会被 Telegram 拒绝
+    （CHAT_ADMIN_REQUIRED），所以这里提前换成能说话的群。
+    """
+    info = _api("getChat", token, {"chat_id": target}) or {}
+    if (info.get("type") or "") != "channel":
+        return target, ""
+
+    title = info.get("title") or info.get("username") or str(target)
+    linked = info.get("linked_chat_id")
+    if not linked:
+        raise BotError(
+            f"「{title}」是频道，机器人不是管理员没法在里面发言。"
+            "请把群组改成 -100 开头的群 ID（群链接形如 https://t.me/c/<数字>/1）"
+        )
+    chat_id = int(linked)
+    if chat_id > 0:
+        chat_id = int(f"-100{chat_id}")
+    return chat_id, f"链接指向频道「{title}」，已自动改发到关联讨论群"
 
 
 def checkin(group: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
@@ -786,10 +814,12 @@ def checkin(group: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
     command = (group.get("command") or "/checkin").strip() or "/checkin"
 
     try:
+        target, hint = _resolve_target(token, target)
         if str(cfg.get("dry_run", "0")) == "1":
             info = _api("getChat", token, {"chat_id": target}) or {}
             name = info.get("title") or info.get("username") or str(target)
-            return {"note": f"模拟运行：机器人能看到「{name}」，未发送消息", "failed": False}
+            note = f"模拟运行：机器人能看到「{name}」，未发送消息"
+            return {"note": f"{hint}｜{note}" if hint else note, "failed": False}
 
         sent = _api("sendMessage", token, {"chat_id": target, "text": command[:4000]})
     except BotError as exc:
@@ -817,4 +847,6 @@ def checkin(group: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
         note = f"已在「{title}」发出 {command}，未捕获到签到机器人的回复"
     else:
         note = f"已在「{title}」发出 {command}（机器人轮询未开启，未校验结果）"
+    if hint:
+        note = f"{hint}｜{note}"
     return {"note": note, "message_id": sent_id, "failed": failed, "chat_title": title}
