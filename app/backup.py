@@ -26,7 +26,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from . import __version__, db
+from . import __version__, db, security
 
 log = logging.getLogger("tg-checkin.backup")
 
@@ -312,6 +312,8 @@ def _restore_logs(items: list[Any], mode: str) -> int:
 
 def _ensure_dir() -> Path:
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    # 备份包里是会话字符串和全部 Key，目录和文件都不该让同机其他用户读到
+    security.harden_permissions(BACKUP_DIR)
     return BACKUP_DIR
 
 
@@ -327,6 +329,7 @@ def save_local(bundle: dict[str, Any] | None = None) -> dict[str, Any]:
     path = _ensure_dir() / f"tgck-{_stamp()}.json"
     text = json.dumps(bundle, ensure_ascii=False, indent=2)
     path.write_text(text, encoding="utf-8")
+    security.harden_permissions(path)
     prune_local()
     return {"name": path.name, "size": len(text.encode("utf-8")), "path": str(path)}
 
@@ -424,6 +427,10 @@ def _http(
     timeout: float = 30.0,
     kind: str = "",
 ) -> tuple[int, bytes]:
+    try:
+        url = security.guard_outbound(url)
+    except security.SecurityError as exc:
+        raise BackupError(str(exc))
     request = urllib.request.Request(url, data=data, method=method)
     for key, value in (headers or {}).items():
         request.add_header(key, value)

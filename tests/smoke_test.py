@@ -733,4 +733,54 @@ with TestClient(app) as client:
         _db.set_setting("github_token", "")
         _db.set_setting("github_repo", "")
 
-print("冒烟测试通过：健康检查、鉴权、群组 CRUD、cron 校验、设置保存、保活自检、AI 机器人、多智能体、机器人签到、扫码登录、多账号、多机器人、补签、备份恢复、WebDAV 自动建目录、GitHub 仓库诊断均正常")
+    # ---------------- 安全加固 ----------------
+    from app import security as _sec
+    from app import db as _sdb
+
+    page = client.get("/")
+    assert page.headers.get("x-frame-options") == "DENY"
+    assert page.headers.get("x-content-type-options") == "nosniff"
+    assert "frame-ancestors 'none'" in page.headers.get("content-security-policy", "")
+    assert page.headers.get("cache-control") == "no-store"
+    assert client.get("/health").headers.get("referrer-policy") == "no-referrer"
+
+    # 会话 token 被改一个字符就不该再通过
+    good = client.cookies.get("tgck_session")
+    assert good and _sec.verify_session(good, "admin123")
+    client.cookies.set("tgck_session", good[:-1] + ("0" if good[-1] != "0" else "1"))
+    assert client.get("/api/bootstrap").status_code == 401
+    client.cookies.set("tgck_session", good)
+    assert client.get("/api/bootstrap").status_code == 200
+
+    # 出网护栏：云元数据地址必须被拦住，普通地址放行
+    for bad in ("http://169.254.169.254/latest/meta-data/", "http://100.100.100.200/",
+                "http://metadata.google.internal/"):
+        try:
+            _sec.guard_outbound(bad)
+        except _sec.SecurityError:
+            pass
+        else:
+            raise AssertionError(f"应该拦住 {bad}")
+    assert _sec.guard_outbound("https://api.deepseek.com/v1")
+    assert _sec.guard_outbound("http://127.0.0.1:8080/dav")  # 本机 / 局域网服务照常可用
+
+    # 连续输错密码会进入冷却，避免在线爆破（测完清掉计数）
+    for _ in range(5):
+        assert client.post("/api/panel/login", json={"password": "wrong"}).status_code == 401
+    blocked = client.post("/api/panel/login", json={"password": "admin123"})
+    assert blocked.status_code == 429, blocked.text
+    assert blocked.headers.get("retry-after")
+    _sec.login_throttle.reset("testclient")
+    assert client.post("/api/panel/login", json={"password": "admin123"}).status_code == 200
+
+    # 改密码后旧会话立即失效
+    assert client.put("/api/settings", json={"panel_password": "n3w-Passw0rd"}).status_code == 200
+    assert client.get("/api/bootstrap").status_code == 401
+    client.cookies.clear()
+    assert client.post("/api/panel/login", json={"password": "n3w-Passw0rd"}).status_code == 200
+    assert client.get("/api/bootstrap").status_code == 200
+    assert _sdb.get_setting("panel_password") == "n3w-Passw0rd"
+    # 留回原始密码，后续断言不受影响
+    assert client.put("/api/settings", json={"panel_password": "admin123"}).status_code == 200
+
+print("冒烟测试通过：健康检查、鉴权、群组 CRUD、cron 校验、设置保存、保活自检、AI 机器人、多智能体、机器人签到、扫码登录、多账号、多机器人、补签、备份恢复、WebDAV 自动建目录、GitHub 仓库诊断、安全加固（会话签名/限速/响应头/出网护栏）均正常")

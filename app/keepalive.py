@@ -20,7 +20,7 @@ import urllib.request
 from typing import Any
 from urllib.parse import urlsplit
 
-from . import db
+from . import db, security
 
 log = logging.getLogger("tg-checkin.keepalive")
 
@@ -111,6 +111,7 @@ def ping_now() -> dict[str, Any]:
     ok = False
     status_text = ""
     try:
+        url = security.guard_outbound(url)
         request = urllib.request.Request(
             url, headers={"User-Agent": "tg-checkin-keepalive/1.0"}
         )

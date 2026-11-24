@@ -565,6 +565,30 @@ pip install -r requirements.txt
 python tests/smoke_test.py
 ```
 
-## 十、使用提醒
+## 十、安全设计
+
+面板里放着 bot token、账号登录会话和各家 AI 的 Key，所以默认按「公网可达」的标准来做防护，不需要你额外配置：
+
+| 面 | 做法 |
+| --- | --- |
+| 面板会话 | 会话 cookie 是 HMAC-SHA256 签名的令牌（含过期时间与密码指纹），不是密码哈希；改密码后所有旧会话立即失效。cookie 为 `HttpOnly` + `SameSite=Lax`，HTTPS 下自动加 `Secure` |
+| 登录爆破 | 同一 IP 连错 5 次开始冷却，30 秒起逐次翻倍，最长 15 分钟；来源 IP 取 Cloudflare 的 `CF-Connecting-IP`，不用可伪造的 `X-Forwarded-For` |
+| 默认密码 | 仍是 `admin123` 时启动会打警告，进面板也会弹提示。没设密码的实例只允许本机访问 |
+| 跨站请求 | 非 GET 的 `/api/*` 会校验 `Origin`/`Referer` 与当前 Host 一致，配合 `SameSite=Lax` 挡 CSRF |
+| 响应头 | CSP（`script-src 'self'`、禁 iframe、禁内联脚本）、`X-Frame-Options: DENY`、`nosniff`、`no-referrer`、`Permissions-Policy`；HTTPS 下加 HSTS；面板与接口一律 `Cache-Control: no-store` |
+| 请求体积 | 非 GET 请求体超过 32MB 直接 413，避免备份恢复接口被撑爆内存 |
+| 出网护栏 | WebDAV / AI 接口地址若是云厂商元数据（`169.254.169.254`、`100.100.100.200`、`metadata.google.internal`）直接拒绝，防止「填个 URL 就把容器身份凭据读走」；本机与局域网服务不受影响 |
+| 数据落盘 | 数据目录 700、数据库与备份文件 600 |
+| 容器权限 | 镜像内以非特权用户 `app`（uid 10001）运行，入口脚本只在启动瞬间用 root 调整数据目录属主后立即降权 |
+| 依赖 | `requirements.txt` 全部锁定版本，避免重建时被上游更新或投毒版本带崩 |
+
+两点需要你自己保证：
+
+- **Panel 密码**别用弱口令。它等同于这台机器的 root——面板能改签到群、能导出全部登录会话。
+- **备份文件**（下载的 JSON、WebDAV / GitHub 上的那份）内含 Telegram 会话字符串，等于账号密码。别丢进公开仓库：GitHub 同步务必用**私有仓库**。
+
+发现安全问题，或想自己核对实现，代码都在 [`app/security.py`](app/security.py)。
+
+## 十一、使用提醒
 
 该工具会代表你的账号在群里定时发送消息。请只在你有权参与的群组中使用，遵守 Telegram 服务条款和群规，不要用于批量骚扰、刷屏或规避平台限制；频繁自动化操作可能导致账号被限制。建议开启随机延迟，并避免把间隔设得过小。

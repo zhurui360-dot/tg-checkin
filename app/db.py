@@ -193,6 +193,20 @@ def init_db() -> None:
         _migrate_columns(conn)
         _seed_identities(conn)
         _seed_agents(conn)
+    _tighten_permissions()
+
+
+def _tighten_permissions() -> None:
+    """库里存着 bot token、登录会话、AI Key：权限收到 600，目录收到 700。
+
+    Windows 上 chmod 语义有限，失败忽略即可，不影响运行。
+    """
+    for path, mode in ((DATA_DIR, 0o700), (DB_PATH, 0o600)):
+        try:
+            if path.exists():
+                os.chmod(path, mode)
+        except OSError:
+            pass
 
 
 def _columns(conn: sqlite3.Connection, table: str) -> set[str]:

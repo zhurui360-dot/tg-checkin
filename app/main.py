@@ -1,7 +1,6 @@
 """FastAPI Web 面板与 API。"""
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -11,10 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__, backup, bot, db, keepalive, scheduler, telegram
+from . import __version__, backup, bot, db, keepalive, scheduler, security, telegram
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -23,7 +22,7 @@ logging.basicConfig(
 log = logging.getLogger("tg-checkin")
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
-COOKIE_NAME = "tgck_session"
+COOKIE_NAME = security.SESSION_COOKIE
 
 # 值守模式：同一套代码部署了多个实例时（比如主用 + 备用），
 # 备用实例设 STANDBY=1 就只开面板、不启动调度和机器人，
@@ -34,6 +33,10 @@ STANDBY = os.getenv("STANDBY", "").strip().lower() in ("1", "true", "yes", "on")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
+    # 数据目录里是 bot token、登录会话、AI Key：能收紧的权限一律收紧
+    security.harden_permissions(db.DATA_DIR, db.DB_PATH, backup.BACKUP_DIR)
+    if security.default_password_in_use():
+        log.warning("面板仍在使用默认密码 admin123，任何人都能登录——请立刻在「系统设置」里改掉")
     # 无持久卷的平台（容器重建即清空）先尝试从云端备份把数据接回来
     try:
         backup.auto_restore_on_boot()
@@ -62,14 +65,27 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 @app.middleware("http")
-async def learn_public_host(request: Request, call_next):
-    """从外部请求里学出公网地址，供保活自检使用。"""
+async def guard_requests(request: Request, call_next):
+    """统一入口守卫：记公网地址、限体积、防 CSRF、补安全响应头。"""
+    path = request.url.path
     host = request.headers.get("host", "")
-    if host and "keepalive" not in request.url.path:
+    scheme = request.headers.get("x-forwarded-proto", "").split(",")[0].strip()
+    if host and "keepalive" not in path:
         # 反向代理后面 request.url.scheme 恒为 http，真实协议在 X-Forwarded-Proto
-        scheme = request.headers.get("x-forwarded-proto", "").split(",")[0].strip()
         keepalive.learn_from_request(scheme or request.url.scheme, host)
-    return await call_next(request)
+
+    # 备份恢复会带一份完整 JSON，正常几十 KB；超过 32MB 直接拒，别让内存被吃光
+    if request.method in ("POST", "PUT", "PATCH"):
+        raw_length = request.headers.get("content-length", "")
+        if raw_length.isdigit() and int(raw_length) > security.MAX_BODY:
+            return JSONResponse({"detail": "请求体太大，已拒绝"}, status_code=413)
+        # 跨站表单在没有 CORS 时也会带上 cookie，这里再挡一层
+        if path.startswith("/api/") and not security.same_origin(request.headers):
+            return JSONResponse({"detail": "请求来源不可信，已拒绝"}, status_code=403)
+
+    response = await call_next(request)
+    security.apply_headers(response, path, https=(scheme == "https"))
+    return response
 
 
 # ---------------- 鉴权 ----------------
@@ -78,13 +94,29 @@ def _panel_password() -> str:
     return db.get_setting("panel_password") or os.getenv("PANEL_PASSWORD", "")
 
 
-def _auth_token(password: str) -> str:
-    return hashlib.sha256(f"tgck-panel|{password}".encode("utf-8")).hexdigest()
+def _client_ip(request: Request) -> str:
+    """取真实来源 IP：Cloudflare 会把 cf-connecting-ip 写死成访客地址。
+
+    不清洗 X-Forwarded-For —— 那个头客户端可以随便伪造，用来做限速键等于没限。
+    """
+    for header in ("cf-connecting-ip", "true-client-ip"):
+        value = (request.headers.get(header) or "").strip()
+        if value:
+            return value
+    return request.client.host if request.client else "unknown"
 
 
 def require_auth(request: Request) -> None:
     password = _panel_password()
-    if password and request.cookies.get(COOKIE_NAME) != _auth_token(password):
+    if not password:
+        # 没设密码时面板等于裸奔。只允许本机直连做初始化，公网一律拒绝。
+        if _client_ip(request) not in ("127.0.0.1", "::1"):
+            raise HTTPException(
+                status_code=401,
+                detail="还没有设置面板密码，请先设置 PANEL_PASSWORD 环境变量",
+            )
+        return
+    if not security.verify_session(request.cookies.get(COOKIE_NAME, ""), password):
         raise HTTPException(status_code=401, detail="请先登录管理面板")
 
 
@@ -112,24 +144,43 @@ def health() -> dict[str, str]:
 # ---------------- 面板登录 ----------------
 
 @app.post("/api/panel/login")
-def panel_login(body: dict[str, Any], response: Response) -> dict[str, Any]:
+def panel_login(body: dict[str, Any], request: Request, response: Response) -> dict[str, Any]:
+    ip = _client_ip(request)
+    wait = security.login_throttle.wait_seconds(ip)
+    if wait:
+        raise HTTPException(
+            status_code=429,
+            detail=f"密码错误次数过多，请 {wait} 秒后再试",
+            headers={"Retry-After": str(wait)},
+        )
     password = str(body.get("password", ""))
     expected = _panel_password()
-    if not expected or password != expected:
+    if not expected:
+        raise HTTPException(
+            status_code=401,
+            detail="还没有设置面板密码，请先设置 PANEL_PASSWORD 环境变量",
+        )
+    if not security.password_ok(password, expected):
+        security.login_throttle.fail(ip)
+        log.warning("面板登录失败，来源 %s", ip)
         raise HTTPException(status_code=401, detail="面板密码错误")
+    security.login_throttle.reset(ip)
+    https = request.headers.get("x-forwarded-proto", "").split(",")[0].strip() == "https"
     response.set_cookie(
         COOKIE_NAME,
-        _auth_token(expected),
+        security.issue_session(expected),
         httponly=True,
         samesite="lax",
-        max_age=60 * 60 * 24 * 30,
+        secure=https or request.url.scheme == "https",
+        path="/",
+        max_age=security.SESSION_TTL,
     )
     return {"ok": True}
 
 
 @app.post("/api/panel/logout")
 def panel_logout(response: Response) -> dict[str, Any]:
-    response.delete_cookie(COOKIE_NAME)
+    response.delete_cookie(COOKIE_NAME, path="/")
     return {"ok": True}
 
 

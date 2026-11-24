@@ -22,7 +22,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from . import db
+from . import db, security
 
 log = logging.getLogger("tg-checkin.bot")
 
@@ -275,6 +275,10 @@ def call_ai(messages: list[dict[str, str]], agent: dict[str, Any] | None = None)
 
     url = base if base.endswith("/chat/completions") else f"{base}/chat/completions"
     try:
+        url = security.guard_outbound(url)
+    except security.SecurityError as exc:
+        raise BotError(str(exc)) from exc
+    try:
         max_tokens = max(64, min(int(cfg.get("ai_max_tokens", "800")), 4096))
         temperature = max(0.0, min(float(cfg.get("ai_temperature", "0.7")), 2.0))
     except ValueError:
@@ -369,6 +373,10 @@ def list_models(base_url: str, api_key: str, proxy: str = "") -> dict[str, Any]:
     if not key:
         raise BotError("先填 API Key，读取模型列表要用它鉴权")
     url = base if base.endswith("/models") else f"{base}/models"
+    try:
+        url = security.guard_outbound(url)
+    except security.SecurityError as exc:
+        raise BotError(str(exc)) from exc
 
     proxy = (proxy or "").strip()
     if proxy:

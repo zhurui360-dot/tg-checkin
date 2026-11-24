@@ -29,6 +29,8 @@ body {
 button, input, select, textarea { font: inherit; color: inherit; }
 a { color: var(--primary); text-decoration: none; }
 .hidden { display: none !important; }
+/* hidden 属性会被 .badge 之类的 display 规则盖掉，加一条兜底 */
+[hidden] { display: none !important; }
 .muted { color: var(--muted); font-size: 12px; }
 .error-text { color: var(--err); font-size: 12px; min-height: 16px; margin: 6px 0 0; }
 
@@ -67,6 +69,11 @@ a { color: var(--primary); text-decoration: none; }
 .nav-item .dot { width: 6px; height: 6px; border-radius: 50%; background: #cbd5e1; }
 .nav-item.active .dot { background: var(--primary); }
 .sidebar-foot { padding: 16px 18px; border-top: 1px solid var(--border); color: var(--muted); font-size: 11px; display: grid; gap: 4px; }
+.side-link { color: var(--primary); text-decoration: none; word-break: break-all; }
+.side-link:hover { text-decoration: underline; }
+.about-links { display: flex; gap: 8px; flex-wrap: wrap; }
+.about-links .btn { text-decoration: none; display: inline-flex; align-items: center; color: inherit; }
+.about-links .btn.ghost { color: var(--text); }
 
 /* 主区域 */
 .main { flex: 1; min-width: 0; }
