@@ -14,6 +14,9 @@
     botDetail: {},
     agents: [],
     editingAgentId: null,
+    modelChoices: [],
+    pickedModels: new Set(),
+    modelProbeKey: "",
     settingsFilled: false,
     backupFilled: false,
     modalHandler: null,
@@ -483,6 +486,141 @@
     if (current) select.value = current;
   }
 
+  const MODEL_HINT = "填好接口地址和 Key 会自动去读这家接口的模型列表；想在同一家接口上用多个模型，勾选多个就行，保存时会一个模型建一个智能体。";
+
+  function renderModelChips() {
+    const box = $("agentModelChips");
+    const input = $("agentModelInput");
+    const hint = $("agentModelHint");
+    if (!box || !input) return;
+    const picked = state.pickedModels;
+    if (!state.modelChoices.length) {
+      box.classList.add("hidden");
+      box.innerHTML = "";
+      input.disabled = false;
+      return;
+    }
+    box.classList.remove("hidden");
+    box.innerHTML = state.modelChoices.map((model, idx) => {
+      const on = picked.has(model) ? " picked" : "";
+      return `<button type="button" class="chip${on}" data-idx="${idx}" title="${esc(model)}">${esc(model)}</button>`;
+    }).join("");
+    if (picked.size > 1) {
+      input.disabled = true;
+      input.value = "";
+      input.placeholder = `已选 ${picked.size} 个模型，保存时各建一个智能体`;
+    } else {
+      input.disabled = false;
+      input.placeholder = "填好上面两项后点「读取模型」，也可以直接手填";
+      if (picked.size === 1) input.value = [...picked][0];
+    }
+    if (hint) {
+      if (!picked.size) {
+        hint.textContent = `这家接口有 ${state.modelChoices.length} 个模型，点一下选中；选多个就一次建多个智能体。`;
+      } else if (picked.size === 1) {
+        hint.textContent = state.editingAgentId
+          ? "编辑时只能保留一个模型；想批量加同一家的其他模型，用「新增智能体」。"
+          : "已选 1 个；再点一个就能一次建多个，名字后面会自动加模型名。";
+      } else {
+        hint.textContent = `已选 ${picked.size} 个，保存时会为每个模型各建一个智能体，名字后面自动加「 · 模型名」。`;
+      }
+    }
+  }
+
+  function resetModelPicker() {
+    state.modelChoices = [];
+    state.pickedModels = new Set();
+    state.modelProbeKey = "";
+    const list = $("agentModelList");
+    if (list) list.innerHTML = "";
+    const box = $("agentModelChips");
+    if (box) {
+      box.innerHTML = "";
+      box.classList.add("hidden");
+    }
+    const input = $("agentModelInput");
+    if (input) {
+      input.disabled = false;
+      input.placeholder = "填好上面两项后点「读取模型」，也可以直接手填";
+    }
+    const hint = $("agentModelHint");
+    if (hint) hint.textContent = MODEL_HINT;
+  }
+
+  async function fetchAgentModels(options = {}) {
+    const form = $("agentForm");
+    if (!form) return;
+    const baseUrl = form.elements.base_url.value.trim();
+    const apiKey = form.elements.api_key.value.trim();
+    const proxy = form.elements.proxy.value.trim();
+    const hint = $("agentModelHint");
+    const btn = $("agentFetchModels");
+    if (!baseUrl) {
+      if (!options.silent) toast("先填接口地址", "err");
+      return;
+    }
+    if (!apiKey && !state.editingAgentId) {
+      if (!options.silent) toast("先填 API Key，读取模型列表要用它鉴权", "err");
+      return;
+    }
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "读取中…";
+    }
+    if (hint) hint.textContent = "正在向接口要模型列表…";
+    try {
+      const data = await api("/api/ai/models", {
+        method: "POST",
+        body: {
+          base_url: baseUrl,
+          api_key: apiKey,
+          proxy,
+          agent_id: state.editingAgentId || 0,
+        },
+      });
+      const models = data.models || [];
+      state.modelChoices = models;
+      state.pickedModels = new Set();
+      const list = $("agentModelList");
+      if (list) list.innerHTML = models.map((m) => `<option value="${esc(m)}"></option>`).join("");
+      // 编辑已有智能体时，把它当前的模型先勾上
+      const current = form.elements.model.value.trim();
+      if (current && models.includes(current)) state.pickedModels = new Set([current]);
+      renderModelChips();
+      if (hint && !state.pickedModels.size) {
+        hint.textContent = `已读到 ${data.count} 个模型，点一下选中。`;
+      }
+    } catch (err) {
+      state.modelChoices = [];
+      state.pickedModels = new Set();
+      const box = $("agentModelChips");
+      if (box) {
+        box.innerHTML = "";
+        box.classList.add("hidden");
+      }
+      if (hint) hint.textContent = `${err.message}（模型名照样可以手填）`;
+      if (!options.silent) toast(err.message, "err");
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "读取模型";
+      }
+    }
+  }
+
+  function maybeFetchAgentModels() {
+    const form = $("agentForm");
+    if (!form) return;
+    const baseUrl = form.elements.base_url.value.trim();
+    const apiKey = form.elements.api_key.value.trim();
+    if (!baseUrl) return;
+    if (!apiKey && !state.editingAgentId) return;
+    const probe = `${baseUrl}|${apiKey ? "new" : "saved"}`;
+    if (state.modelProbeKey === probe && state.modelChoices.length) return;
+    state.modelProbeKey = probe;
+    fetchAgentModels({ silent: true });
+  }
+
   function applyAgentToForm(agent) {
     const form = $("agentForm");
     if (!form) return;
@@ -507,6 +645,7 @@
       : "取个名字，配上模型和 Key 就能用";
     $("agentSaveBtn").textContent = agent ? "保存修改" : "创建智能体";
     $("agentCancelBtn").classList.toggle("hidden", !agent);
+    resetModelPicker();
   }
 
   async function refreshAgents() {
@@ -1432,12 +1571,36 @@
         if (form.elements[key]) payload[key] = form.elements[key].value.trim();
       });
       if (form.elements.enabled) payload.enabled = form.elements.enabled.value === "1";
+      const picked = [...state.pickedModels];
+      const multi = !state.editingAgentId && picked.length > 1;
+      if (!multi && !payload.model) {
+        toast("先选一个模型，或直接手填模型名", "err");
+        return;
+      }
       const btn = $("agentSaveBtn");
       btn.disabled = true;
       try {
         if (state.editingAgentId) {
           await api(`/api/ai/agents/${state.editingAgentId}`, { method: "PUT", body: payload });
           toast("智能体已保存", "ok");
+        } else if (multi) {
+          // 同一家接口一次建多个：一个模型一个智能体，名字后面带上模型名
+          const base = payload.name;
+          let done = 0;
+          const fails = [];
+          for (const model of picked) {
+            try {
+              await api("/api/ai/agents", {
+                method: "POST",
+                body: { ...payload, model, name: `${base} · ${model}` },
+              });
+              done += 1;
+            } catch (err) {
+              fails.push(`${model}：${err.message}`);
+            }
+          }
+          if (fails.length) toast(`建好 ${done} 个，${fails.length} 个失败：${fails[0]}`, "err");
+          else toast(`已为 ${done} 个模型各建一个智能体`, "ok");
         } else {
           await api("/api/ai/agents", { method: "POST", body: payload });
           toast("智能体已创建", "ok");
@@ -1459,6 +1622,38 @@
     });
 
     $("agentCancelBtn").addEventListener("click", () => applyAgentToForm(null));
+
+    $("agentFetchModels").addEventListener("click", () => fetchAgentModels());
+
+    $("agentModelChips").addEventListener("click", (e) => {
+      const chip = e.target.closest(".chip[data-idx]");
+      if (!chip) return;
+      const model = state.modelChoices[Number(chip.dataset.idx)];
+      if (!model) return;
+      if (state.editingAgentId) {
+        state.pickedModels = new Set([model]);
+      } else if (state.pickedModels.has(model)) {
+        state.pickedModels.delete(model);
+      } else {
+        state.pickedModels.add(model);
+      }
+      if (!state.pickedModels.size) {
+        const input = $("agentModelInput");
+        if (input) input.value = "";
+      }
+      renderModelChips();
+    });
+
+    $("agentModelInput").addEventListener("input", () => {
+      if (!state.pickedModels.size) return;
+      state.pickedModels.clear();
+      renderModelChips();
+    });
+
+    ["base_url", "api_key"].forEach((key) => {
+      const el = $("agentForm").elements[key];
+      if (el) el.addEventListener("blur", maybeFetchAgentModels);
+    });
 
     $("agentTestBtn").addEventListener("click", async () => {
       const btn = $("agentTestBtn");

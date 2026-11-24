@@ -623,6 +623,9 @@ def _agent_payload(body: dict[str, Any], current: dict[str, Any] | None = None) 
 
     def number(key: str, default: float, low: float, high: float) -> float:
         raw = body.get(key, default)
+        # 面板留空会传 ""，这不是「填错」，而是「用默认值」
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            raw = default
         try:
             return max(low, min(float(raw), high))
         except (TypeError, ValueError):
@@ -644,6 +647,25 @@ def _agent_payload(body: dict[str, Any], current: dict[str, Any] | None = None) 
         "proxy": str(body.get("proxy", "")).strip(),
         "enabled": bool(enabled),
     }
+
+
+@app.post("/api/ai/models")
+def ai_available_models(body: dict[str, Any], _: None = Depends(require_auth)) -> dict[str, Any]:
+    """按接口地址 + Key 拉模型列表。编辑已有智能体时 Key 留空，就用存下来的那把。"""
+    agent: dict[str, Any] | None = None
+    raw_id = body.get("agent_id")
+    if raw_id not in (None, "", 0, "0"):
+        try:
+            agent = db.get_agent(int(raw_id))
+        except (TypeError, ValueError):
+            agent = None
+    base_url = str(body.get("base_url", "")).strip() or str((agent or {}).get("base_url") or "")
+    api_key = str(body.get("api_key", "")).strip() or str((agent or {}).get("api_key") or "")
+    proxy = str(body.get("proxy", "")).strip() or str((agent or {}).get("proxy") or "")
+    try:
+        return bot.list_models(base_url, api_key, proxy)
+    except bot.BotError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.get("/api/ai/agents")

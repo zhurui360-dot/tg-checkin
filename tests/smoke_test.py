@@ -149,6 +149,73 @@ with TestClient(app) as client:
     assert client.post("/api/ai/agents", json={"name": "x", "base_url": "https://a/v1", "api_key": "k"}).status_code == 400
     assert client.post("/api/ai/agents", json={"name": "x", "base_url": "https://a/v1", "model": "m"}).status_code == 400
 
+    # 面板留空的数值项算「用默认值」，不能报「必须是数字」
+    plain = client.post("/api/ai/agents", json={
+        "name": "全默认参数", "base_url": "https://api.example.com/v1",
+        "model": "m-1", "api_key": "sk-plain",
+        "temperature": "", "max_tokens": "", "history_len": "", "min_interval": "",
+    })
+    assert plain.status_code == 200, plain.text
+    plain_id = plain.json()["id"]
+    plain_row = [a for a in client.get("/api/ai/agents").json()["agents"] if a["id"] == plain_id][0]
+    assert plain_row["model"] == "m-1" and int(plain_row["max_tokens"]) == 800, plain_row
+    assert client.delete(f"/api/ai/agents/{plain_id}").status_code == 200
+
+    # ---------- 读取模型：填了地址 + Key 就自动列模型 ----------
+    import threading
+    from http.server import BaseHTTPRequestHandler as _BaseHandler, ThreadingHTTPServer as _ModelServer
+
+    class ModelsHandler(_BaseHandler):
+        protocol_version = "HTTP/1.0"
+
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            if self.path.rstrip("/") != "/v1/models":
+                self.send_response(404)
+                self.end_headers()
+                return
+            if self.headers.get("Authorization") != "Bearer sk-models":
+                body = b'{"error":{"message":"invalid api key"}}'
+                self.send_response(401)
+            else:
+                body = b'{"object":"list","data":[{"id":"model-b"},{"id":"model-a"},{"id":"model-a"}]}'
+                self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    model_server = _ModelServer(("127.0.0.1", 0), ModelsHandler)
+    threading.Thread(target=model_server.serve_forever, daemon=True).start()
+    models_url = f"http://127.0.0.1:{model_server.server_address[1]}/v1"
+    try:
+        probed = client.post("/api/ai/models", json={"base_url": models_url, "api_key": "sk-models"})
+        assert probed.status_code == 200, probed.text
+        payload = probed.json()
+        assert payload["models"] == ["model-a", "model-b"], payload  # 去重且排序
+        assert payload["count"] == 2 and payload["endpoint"].endswith("/v1/models"), payload
+        # Key 不对要说人话，而不是甩 HTTP 401
+        unauth = client.post("/api/ai/models", json={"base_url": models_url, "api_key": "bad"})
+        assert unauth.status_code == 400 and "鉴权" in unauth.json()["detail"], unauth.text
+        # 地址 / Key 缺一个都直接拒
+        assert client.post("/api/ai/models", json={"api_key": "x"}).status_code == 400
+        assert client.post("/api/ai/models", json={"base_url": models_url}).status_code == 400
+        # 同一家接口建两个模型：一个 key 复用
+        local = client.post("/api/ai/agents", json={
+            "name": "本地接口 · model-a", "base_url": models_url,
+            "api_key": "sk-models", "model": "model-a",
+        })
+        assert local.status_code == 200, local.text
+        local_id = local.json()["id"]
+        # 编辑时 Key 留空，用存下来的那把
+        reused = client.post("/api/ai/models", json={"base_url": models_url, "agent_id": local_id})
+        assert reused.status_code == 200 and reused.json()["count"] == 2, reused.text
+        assert client.delete(f"/api/ai/agents/{local_id}").status_code == 200
+    finally:
+        model_server.shutdown()
+
     # 改名字、改模型；Key 留空表示不修改
     assert client.put(f"/api/ai/agents/{second_id}", json={
         "name": "客服小助手",

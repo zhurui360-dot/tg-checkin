@@ -115,6 +115,17 @@ a { color: var(--primary); text-decoration: none; }
 }
 .field textarea { resize: vertical; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 .span-2 { grid-column: 1 / -1; }
+.field-head { display: flex; align-items: center; gap: 10px; font-size: 12px; color: #4b5563; font-weight: 600; }
+.model-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.model-chips .chip {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.model-chips .chip.picked {
+  background: #eef2ff; border-color: var(--primary); color: var(--primary-dark); font-weight: 600;
+}
+.model-chips .chip.picked::before { content: "✓ "; }
+.form-grid input:disabled { background: #f3f4f6; color: var(--muted); }
 .form-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .presets { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .chip { border: 1px solid var(--border); background: #f9fafb; border-radius: 999px; padding: 5px 10px; font-size: 12px; cursor: pointer; color: #4b5563; }

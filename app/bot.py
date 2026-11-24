@@ -358,6 +358,79 @@ def test_ai(agent: dict[str, Any] | None = None) -> dict[str, Any]:
     return {"ok": True, "reply": text[:200], "ms": int((time.time() - started) * 1000)}
 
 
+def list_models(base_url: str, api_key: str, proxy: str = "") -> dict[str, Any]:
+    """读 OpenAI 兼容接口的 /models，让面板直接把可选模型列出来。"""
+    base = (base_url or "").strip().rstrip("/")
+    key = (api_key or "").strip()
+    if not base:
+        raise BotError("先填接口地址（例如 https://api.deepseek.com/v1）")
+    if not base.startswith(("http://", "https://")):
+        raise BotError("接口地址要以 http:// 或 https:// 开头")
+    if not key:
+        raise BotError("先填 API Key，读取模型列表要用它鉴权")
+    url = base if base.endswith("/models") else f"{base}/models"
+
+    proxy = (proxy or "").strip()
+    if proxy:
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": proxy, "https": proxy})
+        )
+    else:
+        opener = _opener
+
+    request = urllib.request.Request(
+        url,
+        method="GET",
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Accept": "application/json",
+            "User-Agent": "tg-checkin-bot/1.0",
+        },
+    )
+    try:
+        with opener.open(request, timeout=25) as response:
+            raw = response.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")[:200]
+        if exc.code in (401, 403):
+            raise BotError("鉴权失败，Key 可能不对或没开通权限") from exc
+        if exc.code == 404:
+            raise BotError(
+                "这个地址没有 /models 接口，模型名手动填也一样能用；"
+                "也可以把 base_url 补到 /v1 为止再试"
+            ) from exc
+        raise BotError(f"读取模型失败（HTTP {exc.code}）：{detail}") from exc
+    except urllib.error.URLError as exc:
+        raise BotError(f"连不上接口：{getattr(exc, 'reason', exc)}") from exc
+    except (TimeoutError, ConnectionResetError) as exc:
+        raise BotError(f"连接接口超时或被重置：{exc}") from exc
+
+    try:
+        data = json.loads(raw)
+    except ValueError as exc:
+        raise BotError(f"接口返回的不是 JSON，可能是把网页地址填成了 base_url：{raw[:120]}") from exc
+
+    items: Any = None
+    if isinstance(data, dict):
+        items = data.get("data")
+        if items is None:
+            items = data.get("models")
+    models: list[str] = []
+    for item in items or []:
+        if isinstance(item, str):
+            name = item.strip()
+        elif isinstance(item, dict):
+            name = str(item.get("id") or item.get("name") or "").strip()
+        else:
+            name = ""
+        if name and name not in models:
+            models.append(name)
+    if not models:
+        raise BotError("接口没返回任何模型，可能这把 Key 下没有可用模型，或服务没有实现 /models")
+    models.sort()
+    return {"ok": True, "models": models, "count": len(models), "endpoint": url}
+
+
 # ---------------- 消息处理 ----------------
 
 def _chat_title(message: dict[str, Any]) -> str:
