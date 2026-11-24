@@ -581,6 +581,17 @@
       qrTimer = setInterval(pollQr, 2000);
     }
 
+    // 页面加载时若已有等待中的二维码，直接展示并开始轮询（避免重新生成冲掉）
+    (async function resumeQr() {
+      try {
+        const info = await api("/api/tg/qr/status");
+        if (info && info.active) {
+          renderQr(info);
+          startQrPolling();
+        }
+      } catch (err) { /* 忽略 */ }
+    })();
+
     $("qrStartBtn").addEventListener("click", async () => {
       const payload = accountPayload();
       if (!payload.api_id || !payload.api_hash) {
