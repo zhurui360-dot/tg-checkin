@@ -202,7 +202,7 @@ with TestClient(app) as client:
     }).json()["id"]
     user_run = client.post(f"/api/groups/{g3}/test")
     assert user_run.status_code == 500, user_run.text
-    assert "API ID" in user_run.json()["detail"], user_run.text
+    assert "账号" in user_run.json()["detail"], user_run.text
     assert client.delete(f"/api/groups/{g3}").status_code == 200
     assert client.put("/api/settings", json={"checkin_mode": "bot"}).status_code == 200
 
@@ -252,4 +252,184 @@ with TestClient(app) as client:
     assert "管理员" in appbot._group_error_hint("Bad Request: chat admin privileges are required", "@g")
     assert apptg.is_permission_error(RuntimeError("普通错误")) is False
 
-print("冒烟测试通过：健康检查、鉴权、群组 CRUD、cron 校验、设置保存、保活自检、AI 机器人、机器人签到、扫码登录接口均正常")
+    # ---------- 多账号 / 多机器人 / 补签 ----------
+    # 账号列表初始为空，凭据接口不炸
+    assert client.get("/api/accounts").json()["count"] == 0
+    assert client.get("/api/bots").json()["count"] == 0
+    cred = client.get("/api/tg/credentials").json()
+    assert set(cred) == {"api_id", "api_hash", "phone", "proxy_url"}, cred
+
+    # 新建账号：没有手机号/备注要拒绝
+    assert client.post("/api/accounts", json={"name": ""}).status_code == 400
+    aid = client.post("/api/accounts", json={
+        "name": "副账号", "phone": "+8613800138000", "api_id": "123456", "api_hash": "x" * 32,
+    }).json()["id"]
+    accounts = client.get("/api/accounts").json()
+    assert accounts["count"] == 1 and accounts["accounts"][0]["name"] == "副账号"
+    # 手机号要打码，不能原样回显
+    assert "***" in accounts["accounts"][0]["phone"], accounts["accounts"][0]
+    # 还没登录 -> authorized 为 False
+    assert accounts["accounts"][0]["authorized"] is False
+
+    assert client.put(f"/api/accounts/{aid}", json={"name": "改过的名字"}).status_code == 200
+    assert client.get("/api/accounts").json()["accounts"][0]["name"] == "改过的名字"
+    assert client.put("/api/accounts/9999", json={"name": "x"}).status_code == 404
+    # 没登录时校验应给出可操作的 400
+    verify_acc = client.post(f"/api/accounts/{aid}/verify")
+    assert verify_acc.status_code == 400 and "登录" in verify_acc.json()["detail"]
+
+    # 群组可以绑定这个账号；不存在的账号要 400
+    assert client.post("/api/groups", json={
+        "name": "绑定群", "chat": "@bind_group", "schedule": ["0 8 * * *"],
+        "account_id": 9999,
+    }).status_code == 400
+    gb = client.post("/api/groups", json={
+        "name": "绑定群", "chat": "@bind_group", "schedule": ["0 8 * * *"],
+        "account_id": aid, "mode": "user",
+    })
+    assert gb.status_code == 200, gb.text
+    gb_id = gb.json()["id"]
+    bound = [g for g in client.get("/api/groups").json()["groups"] if g["id"] == gb_id][0]
+    assert bound["account_id"] == aid and bound["mode"] == "user", bound
+    # 群组方式只允许 默认 / bot / user
+    assert client.put(f"/api/groups/{gb_id}", json={
+        "name": "绑定群", "chat": "@bind_group", "schedule": ["0 8 * * *"], "mode": "bogus",
+    }).status_code == 400
+    assert client.delete(f"/api/groups/{gb_id}").status_code == 200
+
+    # 机器人：token 必填，无网络时应给出中文错误而不是 500
+    assert client.post("/api/bots", json={"token": ""}).status_code == 400
+    assert client.put("/api/bots/9999", json={"name": "x"}).status_code == 404
+    assert client.delete("/api/bots/9999").status_code == 404
+    assert client.post("/api/bots/9999/verify").status_code == 404
+    assert client.post("/api/bots/9999/restart").status_code == 404
+    # 不指定 bot_id 时，状态里仍要有兼容字段，不让老前端崩
+    legacy = client.get("/api/bot/status").json()
+    for key in ("enabled", "running", "token_set", "bots", "replies"):
+        assert key in legacy, legacy
+
+    # 删除账号后，引用它的群组要被置空，而不是留一个悬空 id
+    db_id = client.post("/api/accounts", json={"name": "临时账号"}).json()["id"]
+    client.post("/api/groups", json={
+        "name": "临时群", "chat": "@tmp_group", "schedule": ["0 8 * * *"], "account_id": db_id,
+    })
+    assert client.delete(f"/api/accounts/{db_id}").status_code == 200
+    for group in client.get("/api/groups").json()["groups"]:
+        assert group.get("account_id") is None, group
+
+    # 补签：条件与开关
+    catch = client.get("/api/catchup").json()
+    assert catch["enabled"] is True and "running" in catch, catch
+    # 今天还没到点（08:00 可能未过），没有群组命中也不能报错
+    assert client.post("/api/catchup/run").status_code == 200
+    assert client.put("/api/settings", json={"catchup_interval": "10"}).status_code == 200
+    assert client.get("/api/catchup").json()["interval"] == "120"  # 低于 120 被抬到 120
+    assert client.put("/api/settings", json={"catchup_enabled": "0"}).status_code == 200
+    assert client.get("/api/catchup").json()["enabled"] is False
+    assert client.put("/api/settings", json={"catchup_enabled": "bogus"}).status_code == 400
+    assert client.put("/api/settings", json={"catchup_enabled": "1"}).status_code == 200
+
+    # 补签判断：今天有计划时间且日志无成功记录时才补
+    from datetime import datetime as _dt
+    from app import scheduler as appsched
+    tz = appsched._timezone()
+    now = _dt.now(tz).replace(hour=23, minute=59, second=0, microsecond=0)
+    fake_group = {"schedule": '["0 8 * * *", "0 20 * * *"]'}
+    passed = appsched._scheduled_times_passed_today(fake_group, now)
+    assert len(passed) == 2, passed
+    early = _dt.now(tz).replace(hour=7, minute=0, second=0, microsecond=0)
+    assert appsched._scheduled_times_passed_today(fake_group, early) == []
+    assert appsched._scheduled_times_passed_today({"schedule": "bad"}, now) == []
+
+    # 导出配置要带上多身份，否则容器重建后账号/机器人会丢
+    exported = client.get("/api/config/export").json()
+    assert "accounts" in exported and "bots" in exported, exported.keys()
+    assert exported["settings"].get("catchup_enabled") is not None
+
+    # ---------- 备份 / 恢复 ----------
+    bstat = client.get("/api/backup/status").json()
+    assert "auto" in bstat and "webdav" in bstat and "github" in bstat, bstat
+    assert bstat["webdav"]["configured"] is False
+    assert bstat["github"]["configured"] is False
+
+    # 备份包要含账号/机器人/群组，且会话字符串不能丢
+    acc_b = client.post("/api/accounts", json={
+        "name": "备份账号", "phone": "+8613700137000", "api_id": "999888", "api_hash": "abc",
+    }).json()["id"]
+    assert client.post("/api/groups", json={
+        "name": "备份群", "chat": "@backup_group", "schedule": ["0 8 * * *"],
+        "mode": "user", "account_id": acc_b,
+    }).status_code == 200
+
+    bundle_resp = client.get("/api/backup/export")
+    assert bundle_resp.status_code == 200, bundle_resp.text
+    assert "attachment" in bundle_resp.headers.get("content-disposition", "")
+    bundle = bundle_resp.json()
+    assert bundle["app"] == "tg-checkin" and bundle["format"] >= 2
+    assert any(a["id"] == acc_b for a in bundle["accounts"]), bundle["accounts"]
+
+    # 恢复：替换模式，账号/机器人 ID 会重排，群组引用要跟着改
+    client.delete(f"/api/accounts/{acc_b}")
+    assert client.delete(f"/api/groups/{[g['id'] for g in client.get('/api/groups').json()['groups'] if g['chat'] == '@backup_group'][0]}").status_code == 200
+
+    restored = client.post("/api/backup/restore", json={"data": bundle, "mode": "replace"})
+    assert restored.status_code == 200, restored.text
+    body = restored.json()
+    assert body["accounts"] >= 1 and body["groups"] >= 1, body
+
+    groups_now = client.get("/api/groups").json()["groups"]
+    backup_group = [g for g in groups_now if g["chat"] == "@backup_group"][0]
+    accounts_now = client.get("/api/accounts").json()["accounts"]
+    assert backup_group["account_id"] in [a["id"] for a in accounts_now], backup_group
+
+    # 合并模式不能产生重复群组
+    again = client.post("/api/backup/restore", json={"data": bundle, "mode": "merge"}).json()
+    assert again["groups"] == 0, again
+    assert len([g for g in client.get("/api/groups").json()["groups"] if g["chat"] == "@backup_group"]) == 1
+
+    # 上传的备份格式不对时给 400 而不是 500
+    assert client.post("/api/backup/restore", json={"data": {"app": "other"}}).status_code == 400
+    assert client.post("/api/backup/restore", json={"data": "not a dict"}).status_code == 400
+    assert client.post("/api/backup/restore", json={"data": bundle, "mode": "oops"}).status_code == 400
+
+    # 本地备份文件：创建 / 列出 / 删除 / 非法文件名
+    made = client.post("/api/backup/local")
+    assert made.status_code == 200, made.text
+    local_name = made.json()["name"]
+    assert local_name.startswith("tgck-")
+    files = client.get("/api/backup/local").json()["files"]
+    assert any(f["name"] == local_name for f in files), files
+    assert client.post(f"/api/backup/local/{local_name}/restore").status_code == 200
+    assert client.delete(f"/api/backup/local/{local_name}").status_code == 200
+    assert client.delete(f"/api/backup/local/{local_name}").status_code == 404
+    assert client.post("/api/backup/local/../etc/passwd/restore").status_code in (400, 404)
+
+    # 自动化开关与数值夹取
+    assert client.put("/api/settings", json={"backup_interval": "0"}).status_code == 200
+    assert client.get("/api/backup/status").json()["auto"]["interval"] == "1"
+    assert client.put("/api/settings", json={"backup_keep": "9999"}).status_code == 200
+    assert client.get("/api/backup/status").json()["auto"]["keep"] == "200"
+    assert client.put("/api/settings", json={"backup_auto": "bogus"}).status_code == 400
+    assert client.put("/api/settings", json={"backup_auto": "1"}).status_code == 200
+    assert client.get("/api/backup/status").json()["auto"]["enabled"] is True
+    # 没配 WebDAV / GitHub 时，自动备份只落本地，不报错
+    ran = client.post("/api/backup/run").json()
+    assert ran["ok"] is True and ran["local"], ran
+    assert ran["webdav"] == "" and ran["github"] == ""
+    assert client.put("/api/settings", json={"backup_auto": "0"}).status_code == 200
+
+    # 没配云端时调测试接口要 400（中文提示），不能 500
+    assert client.post("/api/backup/webdav/test").status_code == 400
+    assert client.post("/api/backup/github/test").status_code == 400
+    assert client.post("/api/backup/webdav/restore", json={"name": "tgck-20260101-000000.json"}).status_code == 400
+
+    # 密钥类字段留空表示不修改
+    client.put("/api/settings", json={"webdav_password": "secret123"})
+    client.put("/api/settings", json={"webdav_password": ""})
+    from app import db as _db
+    assert _db.get_setting("webdav_password") == "secret123"
+    # 面板回填要打码
+    webdav_masked = client.get("/api/bootstrap").json()["settings"]["webdav_password"]
+    assert "secret123" not in webdav_masked, webdav_masked
+
+print("冒烟测试通过：健康检查、鉴权、群组 CRUD、cron 校验、设置保存、保活自检、AI 机器人、机器人签到、扫码登录、多账号、多机器人、补签、备份恢复均正常")

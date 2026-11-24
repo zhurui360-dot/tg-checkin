@@ -31,6 +31,10 @@ DEFAULTS: dict[str, str] = {
     "dry_run": "0",
     # 签到执行者：bot = 用机器人（Bot API，只要 token）；user = 用自己账号（Telethon，需要 api_id）
     "checkin_mode": os.getenv("CHECKIN_MODE", "").strip() or "bot",
+    # 补签：定时点没在线（容器被休眠/重启）时，上线后补一次，保证每天成功一次
+    "catchup_enabled": "1",
+    "catchup_interval": "600",
+    "catchup_cooldown": "1800",
     "keepalive_enabled": "1" if os.getenv("PUBLIC_URL", "").strip() else "0",
     "keepalive_interval": "300",
     "keepalive_url": os.getenv("PUBLIC_URL", "").strip(),
@@ -55,6 +59,26 @@ DEFAULTS: dict[str, str] = {
     "business_connections": "",
     # 机器人待过的群（JSON），入群事件自动记录，面板可一键填入
     "known_chats": "",
+    # ---------- 备份 / 恢复 ----------
+    # 自动备份：本地必存一份，WebDAV / GitHub 按各自开关上传
+    "backup_auto": "0",
+    "backup_interval": "12",          # 小时
+    "backup_keep": "14",              # 本地保留份数
+    "backup_restore_on_boot": "1",    # 新容器数据为空时，开机自动从云端恢复
+    "backup_last_run": "",
+    "backup_last_target": "",
+    "backup_last_error": "",
+    "webdav_url": "",
+    "webdav_username": "",
+    "webdav_password": "",
+    "webdav_auto": "0",
+    "webdav_keep": "14",
+    "github_token": "",
+    "github_repo": "",
+    "github_branch": "main",
+    "github_path": "tgck-backups",
+    "github_auto": "0",
+    "github_keep": "14",
 }
 
 
@@ -90,7 +114,33 @@ def init_db() -> None:
                 command    TEXT NOT NULL DEFAULT '签到',
                 schedule   TEXT NOT NULL DEFAULT '["0 8 * * *"]',
                 enabled    INTEGER NOT NULL DEFAULT 1,
+                account_id INTEGER,
+                bot_id     INTEGER,
+                mode       TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS accounts (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                name           TEXT NOT NULL DEFAULT '',
+                phone          TEXT NOT NULL DEFAULT '',
+                api_id         TEXT NOT NULL DEFAULT '',
+                api_hash       TEXT NOT NULL DEFAULT '',
+                session_string TEXT NOT NULL DEFAULT '',
+                proxy_url      TEXT NOT NULL DEFAULT '',
+                enabled        INTEGER NOT NULL DEFAULT 1,
+                created_at     TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS bots (
+                id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+                name                 TEXT NOT NULL DEFAULT '',
+                token                TEXT NOT NULL DEFAULT '',
+                username             TEXT NOT NULL DEFAULT '',
+                enabled              INTEGER NOT NULL DEFAULT 1,
+                trigger              TEXT NOT NULL DEFAULT 'mention',
+                update_offset        TEXT NOT NULL DEFAULT '0',
+                business_connections TEXT NOT NULL DEFAULT '',
+                known_chats          TEXT NOT NULL DEFAULT '',
+                created_at           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             CREATE TABLE IF NOT EXISTS logs (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -105,6 +155,7 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_logs_ts ON logs(ts DESC);
             CREATE TABLE IF NOT EXISTS ai_messages (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                bot_id     INTEGER NOT NULL DEFAULT 0,
                 chat_id    TEXT NOT NULL,
                 chat_title TEXT NOT NULL DEFAULT '',
                 role       TEXT NOT NULL,
@@ -120,6 +171,80 @@ def init_db() -> None:
                 "INSERT OR IGNORE INTO settings(key, value) VALUES(?, ?)", (key, value)
             )
         _bootstrap_from_env(conn)
+        _migrate_columns(conn)
+        _seed_identities(conn)
+
+
+def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _migrate_columns(conn: sqlite3.Connection) -> None:
+    """老库补列：groups 增加「用哪个账号/机器人签到」，ai_messages 增加 bot_id。"""
+    existing = _columns(conn, "groups")
+    for column, ddl in (
+        ("account_id", "INTEGER"),
+        ("bot_id", "INTEGER"),
+        ("mode", "TEXT NOT NULL DEFAULT ''"),
+    ):
+        if column not in existing:
+            conn.execute(f"ALTER TABLE groups ADD COLUMN {column} {ddl}")
+
+    if "bot_id" not in _columns(conn, "ai_messages"):
+        conn.execute("ALTER TABLE ai_messages ADD COLUMN bot_id INTEGER NOT NULL DEFAULT 0")
+        # 老对话记录归到第一个机器人名下，升级后上下文不至于全丢
+        first = conn.execute("SELECT MIN(id) AS n FROM bots").fetchone()["n"]
+        if first:
+            conn.execute("UPDATE ai_messages SET bot_id=? WHERE bot_id=0", (int(first),))
+
+
+def _seed_identities(conn: sqlite3.Connection) -> None:
+    """把老的「单账号 / 单机器人」配置迁移成列表里的第一条记录。
+
+    之后账号、机器人各自独立管理；settings 里的同名字段只作为兼容保留。
+    """
+    if not conn.execute("SELECT COUNT(*) AS n FROM accounts").fetchone()["n"]:
+        rows = conn.execute(
+            "SELECT key, value FROM settings WHERE key IN "
+            "('account_name','phone','api_id','api_hash','session_string','proxy_url')"
+        ).fetchall()
+        data = {row["key"]: str(row["value"]) for row in rows}
+        if data.get("session_string"):
+            conn.execute(
+                "INSERT INTO accounts(name, phone, api_id, api_hash, session_string, proxy_url, enabled) "
+                "VALUES(?,?,?,?,?,?,1)",
+                (
+                    data.get("account_name") or data.get("phone") or "默认账号",
+                    data.get("phone", ""),
+                    data.get("api_id", ""),
+                    data.get("api_hash", ""),
+                    data["session_string"],
+                    data.get("proxy_url", ""),
+                ),
+            )
+
+    if not conn.execute("SELECT COUNT(*) AS n FROM bots").fetchone()["n"]:
+        rows = conn.execute(
+            "SELECT key, value FROM settings WHERE key IN "
+            "('bot_token','bot_username','bot_trigger','bot_enabled','bot_update_offset',"
+            "'known_chats','business_connections')"
+        ).fetchall()
+        data = {row["key"]: str(row["value"]) for row in rows}
+        if data.get("bot_token"):
+            conn.execute(
+                "INSERT INTO bots(name, token, username, enabled, trigger, update_offset, "
+                "known_chats, business_connections) VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    data.get("bot_username") or "默认机器人",
+                    data["bot_token"],
+                    data.get("bot_username", ""),
+                    1 if data.get("bot_enabled", "1") == "1" else 0,
+                    data.get("bot_trigger", "mention") or "mention",
+                    data.get("bot_update_offset", "0") or "0",
+                    data.get("known_chats", ""),
+                    data.get("business_connections", ""),
+                ),
+            )
 
 
 def _bootstrap_from_env(conn: sqlite3.Connection) -> None:
@@ -162,14 +287,60 @@ def _bootstrap_from_env(conn: sqlite3.Connection) -> None:
             else:
                 schedule = str(schedule)
             conn.execute(
-                "INSERT INTO groups(name, chat, command, schedule, enabled) "
-                "VALUES(?,?,?,?,?)",
+                "INSERT INTO groups(name, chat, command, schedule, enabled, account_id, bot_id, mode) "
+                "VALUES(?,?,?,?,?,?,?,?)",
                 (
                     str(group.get("name") or group["chat"]),
                     str(group["chat"]),
                     str(group.get("command") or "签到"),
                     schedule,
                     1 if group.get("enabled", True) else 0,
+                    group.get("account_id"),
+                    group.get("bot_id"),
+                    str(group.get("mode") or ""),
+                ),
+            )
+
+    accounts = payload.get("accounts", [])
+    if isinstance(accounts, list) and not conn.execute(
+        "SELECT COUNT(*) AS n FROM accounts"
+    ).fetchone()["n"]:
+        for account in accounts:
+            if not isinstance(account, dict) or not str(account.get("session_string", "")).strip():
+                continue
+            conn.execute(
+                "INSERT INTO accounts(name, phone, api_id, api_hash, session_string, proxy_url, enabled) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (
+                    str(account.get("name") or "账号"),
+                    str(account.get("phone", "")),
+                    str(account.get("api_id", "")),
+                    str(account.get("api_hash", "")),
+                    str(account.get("session_string", "")),
+                    str(account.get("proxy_url", "")),
+                    1 if account.get("enabled", True) else 0,
+                ),
+            )
+
+    bots = payload.get("bots", [])
+    if isinstance(bots, list) and not conn.execute(
+        "SELECT COUNT(*) AS n FROM bots"
+    ).fetchone()["n"]:
+        for item in bots:
+            if not isinstance(item, dict) or not str(item.get("token", "")).strip():
+                continue
+            conn.execute(
+                "INSERT INTO bots(name, token, username, enabled, trigger, update_offset, "
+                "known_chats, business_connections) VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    str(item.get("name") or item.get("username") or "机器人"),
+                    str(item.get("token", "")),
+                    str(item.get("username", "")),
+                    1 if item.get("enabled", True) else 0,
+                    str(item.get("trigger") or "mention"),
+                    str(item.get("update_offset") or "0"),
+                    str(item.get("known_chats") or ""),
+                    str(item.get("business_connections") or ""),
                 ),
             )
 
@@ -216,14 +387,17 @@ def get_group(group_id: int) -> dict[str, Any] | None:
 def add_group(data: dict[str, Any]) -> int:
     with connection() as conn:
         cur = conn.execute(
-            "INSERT INTO groups(name, chat, command, schedule, enabled) "
-            "VALUES(?,?,?,?,?)",
+            "INSERT INTO groups(name, chat, command, schedule, enabled, account_id, bot_id, mode) "
+            "VALUES(?,?,?,?,?,?,?,?)",
             (
                 data["name"],
                 data["chat"],
                 data["command"],
                 data["schedule"],
                 1 if data.get("enabled", True) else 0,
+                data.get("account_id"),
+                data.get("bot_id"),
+                str(data.get("mode") or ""),
             ),
         )
         return int(cur.lastrowid)
@@ -232,14 +406,17 @@ def add_group(data: dict[str, Any]) -> int:
 def update_group(group_id: int, data: dict[str, Any]) -> bool:
     with connection() as conn:
         cur = conn.execute(
-            "UPDATE groups SET name=?, chat=?, command=?, schedule=?, enabled=? "
-            "WHERE id=?",
+            "UPDATE groups SET name=?, chat=?, command=?, schedule=?, enabled=?, "
+            "account_id=?, bot_id=?, mode=? WHERE id=?",
             (
                 data["name"],
                 data["chat"],
                 data["command"],
                 data["schedule"],
                 1 if data.get("enabled", True) else 0,
+                data.get("account_id"),
+                data.get("bot_id"),
+                str(data.get("mode") or ""),
                 group_id,
             ),
         )
@@ -322,56 +499,264 @@ def stats() -> dict[str, int]:
 # ---------------- AI 对话记忆 ----------------
 
 def add_ai_message(
-    chat_id: str, chat_title: str, role: str, author: str, content: str
+    chat_id: str,
+    chat_title: str,
+    role: str,
+    author: str,
+    content: str,
+    bot_id: int = 0,
 ) -> None:
     with connection() as conn:
         conn.execute(
-            "INSERT INTO ai_messages(chat_id, chat_title, role, author, content) "
-            "VALUES(?,?,?,?,?)",
-            (str(chat_id), chat_title[:120], role, author[:80], content[:4000]),
+            "INSERT INTO ai_messages(bot_id, chat_id, chat_title, role, author, content) "
+            "VALUES(?,?,?,?,?,?)",
+            (int(bot_id or 0), str(chat_id), chat_title[:120], role, author[:80], content[:4000]),
         )
-        # 每个会话只保留最近 60 条，避免无限增长
+        # 每个会话只保留最近 60 条，避免无限增长（按机器人分开算）
         conn.execute(
-            "DELETE FROM ai_messages WHERE chat_id=? AND id NOT IN "
-            "(SELECT id FROM ai_messages WHERE chat_id=? ORDER BY id DESC LIMIT 60)",
-            (str(chat_id), str(chat_id)),
+            "DELETE FROM ai_messages WHERE bot_id=? AND chat_id=? AND id NOT IN "
+            "(SELECT id FROM ai_messages WHERE bot_id=? AND chat_id=? ORDER BY id DESC LIMIT 60)",
+            (int(bot_id or 0), str(chat_id), int(bot_id or 0), str(chat_id)),
         )
 
 
-def ai_history(chat_id: str, limit: int = 12) -> list[dict[str, Any]]:
+def ai_history(chat_id: str, limit: int = 12, bot_id: int = 0) -> list[dict[str, Any]]:
     """取最近若干条对话，按时间正序返回，供拼接上下文。"""
     limit = max(1, min(int(limit), 40))
     with connection() as conn:
         rows = conn.execute(
             "SELECT role, author, content, ts FROM ai_messages "
-            "WHERE chat_id=? ORDER BY id DESC LIMIT ?",
-            (str(chat_id), limit),
+            "WHERE bot_id=? AND chat_id=? ORDER BY id DESC LIMIT ?",
+            (int(bot_id or 0), str(chat_id), limit),
         ).fetchall()
     return [dict(row) for row in reversed(rows)]
 
 
-def list_ai_messages(limit: int = 60) -> list[dict[str, Any]]:
+def list_ai_messages(limit: int = 60, bot_id: int | None = None) -> list[dict[str, Any]]:
     limit = max(1, min(int(limit), 300))
+    sql = "SELECT * FROM ai_messages"
+    params: list[Any] = []
+    if bot_id is not None:
+        sql += " WHERE bot_id=?"
+        params.append(int(bot_id))
+    sql += " ORDER BY id DESC LIMIT ?"
+    params.append(limit)
     with connection() as conn:
-        rows = conn.execute(
-            "SELECT * FROM ai_messages ORDER BY id DESC LIMIT ?", (limit,)
-        ).fetchall()
+        rows = conn.execute(sql, params).fetchall()
     return [dict(row) for row in rows]
 
 
-def clear_ai_messages() -> None:
+def clear_ai_messages(bot_id: int | None = None) -> None:
     with connection() as conn:
-        conn.execute("DELETE FROM ai_messages")
+        if bot_id is None:
+            conn.execute("DELETE FROM ai_messages")
+        else:
+            conn.execute("DELETE FROM ai_messages WHERE bot_id=?", (int(bot_id),))
 
 
-def ai_stats() -> dict[str, int]:
+def ai_stats(bot_id: int | None = None) -> dict[str, int]:
+    where = "" if bot_id is None else " WHERE bot_id=?"
+    params: tuple[Any, ...] = () if bot_id is None else (int(bot_id),)
     with connection() as conn:
-        total = conn.execute("SELECT COUNT(*) AS n FROM ai_messages").fetchone()["n"]
-        today = conn.execute(
+        total = conn.execute(f"SELECT COUNT(*) AS n FROM ai_messages{where}", params).fetchone()["n"]
+        today_row = conn.execute(
             "SELECT COUNT(*) AS n FROM ai_messages "
-            "WHERE role='assistant' AND date(ts)=date('now','localtime')"
-        ).fetchone()["n"]
+            f"WHERE role='assistant' AND date(ts)=date('now','localtime')"
+            + ("" if bot_id is None else " AND bot_id=?"),
+            params,
+        ).fetchone()
         chats = conn.execute(
-            "SELECT COUNT(DISTINCT chat_id) AS n FROM ai_messages"
+            f"SELECT COUNT(DISTINCT chat_id) AS n FROM ai_messages{where}", params
         ).fetchone()["n"]
-    return {"total": int(total), "today": int(today), "chats": int(chats)}
+    return {"total": int(total), "today": int(today_row["n"]), "chats": int(chats)}
+
+
+# ---------------- 账号列表 ----------------
+
+ACCOUNT_FIELDS = ("name", "phone", "api_id", "api_hash", "session_string", "proxy_url", "enabled")
+
+
+def _account_row(row: sqlite3.Row) -> dict[str, Any]:
+    data = dict(row)
+    data["enabled"] = bool(data.get("enabled"))
+    data["authorized"] = bool(str(data.get("session_string") or "").strip())
+    return data
+
+
+def list_accounts() -> list[dict[str, Any]]:
+    with connection() as conn:
+        rows = conn.execute("SELECT * FROM accounts ORDER BY id").fetchall()
+    return [_account_row(row) for row in rows]
+
+
+def get_account(account_id: int) -> dict[str, Any] | None:
+    with connection() as conn:
+        row = conn.execute("SELECT * FROM accounts WHERE id=?", (account_id,)).fetchone()
+    return None if row is None else _account_row(row)
+
+
+def default_account() -> dict[str, Any] | None:
+    """没指定账号时的兜底：优先已登录且启用的，其次任意一条。"""
+    with connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM accounts WHERE enabled=1 AND session_string<>'' ORDER BY id LIMIT 1"
+        ).fetchone()
+        if row is None:
+            row = conn.execute("SELECT * FROM accounts ORDER BY id LIMIT 1").fetchone()
+    return None if row is None else _account_row(row)
+
+
+def add_account(data: dict[str, Any]) -> int:
+    with connection() as conn:
+        cur = conn.execute(
+            "INSERT INTO accounts(name, phone, api_id, api_hash, session_string, proxy_url, enabled) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (
+                data.get("name") or data.get("phone") or "账号",
+                data.get("phone", ""),
+                data.get("api_id", ""),
+                data.get("api_hash", ""),
+                data.get("session_string", ""),
+                data.get("proxy_url", ""),
+                1 if data.get("enabled", True) else 0,
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def update_account(account_id: int, data: dict[str, Any]) -> bool:
+    current = get_account(account_id)
+    if current is None:
+        return False
+    merged = {**current, **{k: v for k, v in data.items() if k in ACCOUNT_FIELDS}}
+    with connection() as conn:
+        cur = conn.execute(
+            "UPDATE accounts SET name=?, phone=?, api_id=?, api_hash=?, session_string=?, "
+            "proxy_url=?, enabled=? WHERE id=?",
+            (
+                merged.get("name", ""),
+                merged.get("phone", ""),
+                merged.get("api_id", ""),
+                merged.get("api_hash", ""),
+                merged.get("session_string", ""),
+                merged.get("proxy_url", ""),
+                1 if merged.get("enabled", True) else 0,
+                account_id,
+            ),
+        )
+        return cur.rowcount > 0
+
+
+def delete_account(account_id: int) -> bool:
+    with connection() as conn:
+        cur = conn.execute("DELETE FROM accounts WHERE id=?", (account_id,))
+        conn.execute("UPDATE groups SET account_id=NULL WHERE account_id=?", (account_id,))
+        return cur.rowcount > 0
+
+
+# ---------------- 机器人列表 ----------------
+
+BOT_FIELDS = (
+    "name", "token", "username", "enabled", "trigger",
+    "update_offset", "business_connections", "known_chats",
+)
+
+
+def _bot_row(row: sqlite3.Row) -> dict[str, Any]:
+    data = dict(row)
+    data["enabled"] = bool(data.get("enabled"))
+    data["token_set"] = bool(str(data.get("token") or "").strip())
+    return data
+
+
+def list_bots() -> list[dict[str, Any]]:
+    with connection() as conn:
+        rows = conn.execute("SELECT * FROM bots ORDER BY id").fetchall()
+    return [_bot_row(row) for row in rows]
+
+
+def get_bot(bot_id: int) -> dict[str, Any] | None:
+    with connection() as conn:
+        row = conn.execute("SELECT * FROM bots WHERE id=?", (bot_id,)).fetchone()
+    return None if row is None else _bot_row(row)
+
+
+def default_bot() -> dict[str, Any] | None:
+    with connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM bots WHERE enabled=1 AND token<>'' ORDER BY id LIMIT 1"
+        ).fetchone()
+        if row is None:
+            row = conn.execute("SELECT * FROM bots ORDER BY id LIMIT 1").fetchone()
+    return None if row is None else _bot_row(row)
+
+
+def add_bot(data: dict[str, Any]) -> int:
+    with connection() as conn:
+        cur = conn.execute(
+            "INSERT INTO bots(name, token, username, enabled, trigger) VALUES(?,?,?,?,?)",
+            (
+                data.get("name") or data.get("username") or "机器人",
+                data.get("token", ""),
+                data.get("username", ""),
+                1 if data.get("enabled", True) else 0,
+                data.get("trigger") or "mention",
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def update_bot(bot_id: int, data: dict[str, Any]) -> bool:
+    current = get_bot(bot_id)
+    if current is None:
+        return False
+    merged = {**current, **{k: v for k, v in data.items() if k in BOT_FIELDS}}
+    with connection() as conn:
+        cur = conn.execute(
+            "UPDATE bots SET name=?, token=?, username=?, enabled=?, trigger=?, "
+            "update_offset=?, business_connections=?, known_chats=? WHERE id=?",
+            (
+                merged.get("name", ""),
+                merged.get("token", ""),
+                merged.get("username", ""),
+                1 if merged.get("enabled", True) else 0,
+                merged.get("trigger") or "mention",
+                str(merged.get("update_offset") or "0"),
+                merged.get("business_connections") or "",
+                merged.get("known_chats") or "",
+                bot_id,
+            ),
+        )
+        return cur.rowcount > 0
+
+
+def delete_bot(bot_id: int) -> bool:
+    with connection() as conn:
+        cur = conn.execute("DELETE FROM bots WHERE id=?", (bot_id,))
+        conn.execute("UPDATE groups SET bot_id=NULL WHERE bot_id=?", (bot_id,))
+        return cur.rowcount > 0
+
+
+# ---------------- 补签用：今天是否已成功 ----------------
+
+def success_today(group_id: int) -> bool:
+    with connection() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM logs WHERE group_id=? AND status='success' "
+            "AND date(ts, 'localtime')=date('now', 'localtime')",
+            (group_id,),
+        ).fetchone()
+    return bool(row["n"])
+
+
+def last_attempt_epoch(group_id: int) -> float:
+    """最近一次尝试的时间戳（UTC epoch 秒），用于补签冷却判断。"""
+    with connection() as conn:
+        row = conn.execute(
+            "SELECT CAST(strftime('%s', ts) AS INTEGER) AS ts FROM logs "
+            "WHERE group_id=? ORDER BY id DESC LIMIT 1",
+            (group_id,),
+        ).fetchone()
+    if row is None or row["ts"] is None:
+        return 0.0
+    return float(row["ts"])

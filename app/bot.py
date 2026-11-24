@@ -1,13 +1,15 @@
 """Telegram 机器人：走 Bot API，不需要 api_id / api_hash。
 
 两种用法，都只需要 BotFather 给的 token：
-- 群签到：机器人被拉进群后，按 cron 往群里发签到指令（默认方式，见 checkin()）。
+- 群签到：机器人被拉进群后，按 cron 往群里发签到指令（见 checkin()）。
 - AI 聊天 / 秘书模式：私聊、群里被 @ 时由 AI 回复；开启 Telegram Business
   后还能以账号主人身份回复私聊（见 business 相关函数）。
 
 与 telegram.py 的区别：telegram.py 用 MTProto（Telethon）驱动**你自己的账号**，
 需要 api_id，适合「签到机器人只认真人账号」这类场景，作为备用方式保留。
 
+支持多个机器人：每个 bot 一条记录（bots 表），各自一个轮询线程、各自的
+update_offset / 最近消息缓存 / Business 连接，互不干扰。
 长轮询用 getUpdates + offset 游标，游标落库，进程重启后不会重复回复旧消息。
 """
 from __future__ import annotations
@@ -28,23 +30,14 @@ API_ROOT = "https://api.telegram.org"
 # 绕过环境里的 http_proxy，避免容器内代理干扰出网
 _opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
-_lock = threading.Lock()
-_thread: threading.Thread | None = None
-_stop: threading.Event | None = None
+_lock = threading.RLock()
+# bot_id -> 运行时（线程、停止信号、状态、最近消息）
+_runtimes: dict[int, dict[str, Any]] = {}
 
-_state: dict[str, Any] = {
-    "running": False,
-    "last_error": "",
-    "last_poll": "",
-    "replies": 0,
-    "bot_name": "",
-    "bot_username": "",
-    "started_at": "",
-    "business_replies": 0,  # 以用户本人身份（Business）发出的条数
-}
+DEFAULT_RUNTIME_KEY = 0
 
-# 每个会话的上次回复时间，用于最小间隔限流
-_last_reply: dict[str, float] = {}
+# 每个会话的上次回复时间，用于最小间隔限流（按机器人分开，避免互相影响）
+_last_reply: dict[tuple[int, str], float] = {}
 
 
 class BotError(RuntimeError):
@@ -85,33 +78,126 @@ def _api(method: str, token: str, payload: dict[str, Any] | None = None, timeout
 
 # ---------------- 配置读取 ----------------
 
+# 老版本只有一条机器人配置，存在 settings 里。升级后这条记录被搬进 bots 表，
+# 但如果用户没迁移过（比如刚 reset 库），这里仍然要能读出来，所以保留回落。
+
 def _cfg() -> dict[str, str]:
     return db.get_settings()
 
 
-def enabled() -> bool:
-    return db.get_setting("bot_enabled", "0") == "1"
+def _record(bot_id: int | None = None) -> dict[str, Any] | None:
+    """取机器人记录：指定优先，否则默认机器人，再否则老 settings 里的单机器人。"""
+    if bot_id:
+        found = db.get_bot(int(bot_id))
+        if found:
+            return found
+    found = db.default_bot()
+    if found:
+        return found
+    # 一个机器人记录都没有时，退回老的单机器人配置（可能连 token 都还没填）
+    return {
+        "id": DEFAULT_RUNTIME_KEY,
+        "name": db.get_setting("bot_username", "") or "默认机器人",
+        "token": str(db.get_setting("bot_token", "")).strip(),
+        "username": db.get_setting("bot_username", ""),
+        "enabled": db.get_setting("bot_enabled", "0") == "1",
+        "trigger": db.get_setting("bot_trigger", "mention"),
+        "update_offset": db.get_setting("bot_update_offset", "0"),
+        "business_connections": db.get_setting("business_connections", ""),
+        "known_chats": db.get_setting("known_chats", ""),
+    }
 
 
-def _trigger_mode() -> str:
-    mode = db.get_setting("bot_trigger", "mention")
+_SETTING_ALIASES = {
+    "username": "bot_username",
+    "enabled": "bot_enabled",
+    "trigger": "bot_trigger",
+    "update_offset": "bot_update_offset",
+}
+
+
+def _persist(record: dict[str, Any], **fields: Any) -> None:
+    """写回机器人字段；老的单机器人配置落到 settings。"""
+    rid = int(record.get("id") or 0)
+    if rid and db.get_bot(rid):
+        db.update_bot(rid, fields)
+        return
+    for key, value in fields.items():
+        if key == "enabled":
+            db.set_setting("bot_enabled", "1" if value else "0")
+            continue
+        db.set_setting(_SETTING_ALIASES.get(key, key), str(value))
+
+
+def enabled(bot_id: int | None = None) -> bool:
+    record = _record(bot_id)
+    return bool(record and record.get("enabled"))
+
+
+def _trigger_mode(bot_id: int | None = None) -> str:
+    record = _record(bot_id) or {}
+    mode = str(record.get("trigger") or "mention")
     return mode if mode in ("mention", "all", "private") else "mention"
+
+
+def token_of(bot_id: int | None = None) -> str:
+    record = _record(bot_id)
+    return str((record or {}).get("token") or "").strip()
+
+
+# ---------------- 运行时（每个机器人一份） ----------------
+
+def _runtime(bot_id: int | None = None) -> dict[str, Any]:
+    """取（必要时创建）某个机器人的运行时容器。"""
+    key = int(bot_id or DEFAULT_RUNTIME_KEY)
+    with _lock:
+        rt = _runtimes.get(key)
+        if rt is None:
+            rt = {
+                "id": key,
+                "thread": None,
+                "stop": None,
+                "recent_lock": threading.RLock(),
+                "recent": {},
+                "state": {
+                    "running": False,
+                    "last_error": "",
+                    "last_poll": "",
+                    "replies": 0,
+                    "bot_name": "",
+                    "bot_username": "",
+                    "started_at": "",
+                    "business_replies": 0,
+                },
+            }
+            _runtimes[key] = rt
+        return rt
+
+
+def _state_of(bot_id: int | None = None) -> dict[str, Any]:
+    return _runtime(bot_id)["state"]
 
 
 # ---------------- Token 校验 ----------------
 
-def verify_token(token: str | None = None) -> dict[str, Any]:
-    """调用 getMe 校验 token，并把机器人信息写入配置。"""
-    token = (token or db.get_setting("bot_token", "")).strip()
+def verify_token(token: str | None = None, bot_id: int | None = None) -> dict[str, Any]:
+    """调用 getMe 校验 token，并把机器人信息写回记录（或老配置）。"""
+    record = _record(bot_id) if bot_id else None
+    token = (token or str((record or {}).get("token") or "")).strip() or db.get_setting("bot_token", "").strip()
     me = _api("getMe", token, timeout=20)
     username = me.get("username") or ""
     name = " ".join(
         x for x in (me.get("first_name"), me.get("last_name")) if x
     ) or username
-    db.set_setting("bot_username", username)
+    target = record or _record()
+    if target:
+        _persist(target, username=username, name=target.get("name") or name)
+    else:
+        db.set_setting("bot_username", username)
+    state = _state_of(bot_id)
     with _lock:
-        _state["bot_name"] = name
-        _state["bot_username"] = username
+        state["bot_name"] = name
+        state["bot_username"] = username
     return {
         "ok": True,
         "id": me.get("id"),
@@ -125,7 +211,9 @@ def verify_token(token: str | None = None) -> dict[str, Any]:
 
 # ---------------- AI 调用 ----------------
 
-def _ai_messages(chat_id: str, user_text: str, author: str, is_private: bool) -> list[dict[str, str]]:
+def _ai_messages(
+    chat_id: str, user_text: str, author: str, is_private: bool, bot_id: int | None = None
+) -> list[dict[str, str]]:
     cfg = _cfg()
     system = (cfg.get("ai_system_prompt") or "").strip()
     messages: list[dict[str, str]] = []
@@ -136,7 +224,7 @@ def _ai_messages(chat_id: str, user_text: str, author: str, is_private: bool) ->
         history_len = max(0, min(int(cfg.get("ai_history_len", "12")), 40))
     except ValueError:
         history_len = 12
-    for item in db.ai_history(chat_id, history_len):
+    for item in db.ai_history(chat_id, history_len, bot_id=bot_id or 0):
         role = item.get("role")
         content = str(item.get("content") or "").strip()
         if role not in ("user", "assistant") or not content:
@@ -271,7 +359,7 @@ def _author(message: dict[str, Any]) -> str:
     )
 
 
-def _should_reply(message: dict[str, Any], bot_username: str) -> tuple[bool, str]:
+def _should_reply(message: dict[str, Any], bot_username: str, bot_id: int | None = None) -> tuple[bool, str]:
     """判断这条消息要不要回。返回 (是否回复, 去掉 @ 之后的文本)。"""
     chat = message.get("chat") or {}
     chat_type = chat.get("type")
@@ -284,7 +372,7 @@ def _should_reply(message: dict[str, Any], bot_username: str) -> tuple[bool, str
         return False, ""
 
     is_private = chat_type == "private"
-    mode = _trigger_mode()
+    mode = _trigger_mode(bot_id)
     if is_private:
         return True, text
     if mode == "private":
@@ -322,9 +410,10 @@ def _should_reply(message: dict[str, Any], bot_username: str) -> tuple[bool, str
 # 关键坑：用户自己发的消息也会以 business_message 回显，如果不按 owner_id
 # 过滤，AI 会对着自己的回复再回一次，形成死循环。
 
-def business_connections() -> dict[str, Any]:
+def business_connections(bot_id: int | None = None) -> dict[str, Any]:
     """已绑定的 Business 连接，key 是 business_connection_id。"""
-    raw = db.get_setting("business_connections", "")
+    record = _record(bot_id) or {}
+    raw = str(record.get("business_connections") or "") or db.get_setting("business_connections", "")
     if not raw:
         return {}
     try:
@@ -334,12 +423,12 @@ def business_connections() -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _save_business_connection(conn: dict[str, Any]) -> None:
+def _save_business_connection(conn: dict[str, Any], bot_id: int | None = None) -> None:
     conn_id = str(conn.get("id") or "")
     if not conn_id:
         return
     user = conn.get("user") or {}
-    data = business_connections()
+    data = business_connections(bot_id)
     data[conn_id] = {
         "owner_id": user.get("id"),
         "owner_name": " ".join(
@@ -351,42 +440,45 @@ def _save_business_connection(conn: dict[str, Any]) -> None:
         "user_chat_id": conn.get("user_chat_id"),
         "updated": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
+    record = _record(bot_id)
+    if record and record.get("id"):
+        db.update_bot(int(record["id"]), {"business_connections": json.dumps(data, ensure_ascii=False)})
     db.set_setting("business_connections", json.dumps(data, ensure_ascii=False))
     with _lock:
-        _state["business"] = list(data.values())
+        _state_of(bot_id)["business"] = list(data.values())
 
 
-def _handle_business_connection(conn: dict[str, Any]) -> None:
-    _save_business_connection(conn)
+def _handle_business_connection(conn: dict[str, Any], bot_id: int | None = None) -> None:
+    _save_business_connection(conn, bot_id)
     name = (conn.get("user") or {}).get("first_name") or "用户"
     state = "已启用" if conn.get("is_enabled") else "已停用"
     log.info("Business 连接更新：%s %s", name, state)
 
 
-def _business_owner_id(connection_id: str) -> Any:
-    info = business_connections().get(connection_id) or {}
+def _business_owner_id(connection_id: str, bot_id: int | None = None) -> Any:
+    info = business_connections(bot_id).get(connection_id) or {}
     return info.get("owner_id")
 
 
-def is_own_business_message(message: dict[str, Any]) -> bool:
+def is_own_business_message(message: dict[str, Any], bot_id: int | None = None) -> bool:
     """判断这条 business 消息是不是账号主人自己发的（含我们自己的回复回显）。"""
     conn_id = message.get("business_connection_id")
     if not conn_id:
         return False
-    owner_id = _business_owner_id(conn_id)
+    owner_id = _business_owner_id(conn_id, bot_id)
     sender_id = (message.get("from") or {}).get("id")
     return owner_id is not None and sender_id == owner_id
 
 
-def _ensure_business_connection(connection_id: str) -> None:
+def _ensure_business_connection(connection_id: str, bot_id: int | None = None) -> None:
     """本地缓存里没有这个连接时，向 Bot API 取回来。
 
     容器没有持久卷，重建后 business_connections 是空的；不知道 owner_id 就
     分不清「对方发的」和「自己回显的」，会让 AI 自问自答。所以必须按需补齐。
     """
-    if not connection_id or connection_id in business_connections():
+    if not connection_id or connection_id in business_connections(bot_id):
         return
-    token = db.get_setting("bot_token", "").strip()
+    token = token_of(bot_id)
     if not token:
         return
     try:
@@ -399,7 +491,7 @@ def _ensure_business_connection(connection_id: str) -> None:
         log.warning("取回 Business 连接 %s 失败：%s", connection_id, exc)
         return
     if isinstance(conn, dict):
-        _save_business_connection(conn)
+        _save_business_connection(conn, bot_id)
 
 
 def _reply(
@@ -407,8 +499,9 @@ def _reply(
     text: str,
     reply_to: int | None,
     business_connection_id: str | None = None,
+    bot_id: int | None = None,
 ) -> None:
-    token = db.get_setting("bot_token", "")
+    token = token_of(bot_id)
     payload: dict[str, Any] = {"chat_id": chat_id, "text": text[:4000]}
     if business_connection_id:
         # 带上这个参数，消息才会以账号主人的身份发出
@@ -422,26 +515,28 @@ def _reply(
         raise
 
 
-def _handle_message(message: dict[str, Any]) -> None:
+def _handle_message(message: dict[str, Any], bot_id: int | None = None) -> None:
     cfg = _cfg()
-    bot_username = (cfg.get("bot_username") or "").strip()
+    record = _record(bot_id) or {}
+    bot_username = str(record.get("username") or "").strip()
     chat = message.get("chat") or {}
     chat_id = chat.get("id")
     if chat_id is None:
         return
+    state = _state_of(bot_id)
 
     # Business 模式下，账号主人自己的消息会回显，必须跳过，否则自问自答死循环
     biz = message.get("business_connection_id")
     if biz:
-        _ensure_business_connection(biz)
-        if is_own_business_message(message):
+        _ensure_business_connection(biz, bot_id)
+        if is_own_business_message(message, bot_id):
             return
-        if _business_owner_id(biz) is None:
+        if _business_owner_id(biz, bot_id) is None:
             # 拿不到 owner 就分不清是谁发的，宁可这条不回，也不能冒死循环的风险
             log.warning("Business 连接 %s 的 owner 未知，跳过该消息", biz)
             return
 
-    should, text = _should_reply(message, bot_username)
+    should, text = _should_reply(message, bot_username, bot_id)
     if not should:
         return
 
@@ -450,65 +545,69 @@ def _handle_message(message: dict[str, Any]) -> None:
     except ValueError:
         min_interval = 3.0
 
-    key = str(chat_id)
+    key = (int(bot_id or DEFAULT_RUNTIME_KEY), str(chat_id))
     now = time.time()
     if min_interval and now - _last_reply.get(key, 0) < min_interval:
-        log.info("会话 %s 距上次回复不足 %.0f 秒，跳过", key, min_interval)
+        log.info("会话 %s 距上次回复不足 %.0f 秒，跳过", chat_id, min_interval)
         return
 
     title = _chat_title(message)
     author = _author(message)
     is_private = chat.get("type") == "private"
-    db.add_ai_message(key, title, "user", author, text)
+    storage_id = str(chat_id)
+    db.add_ai_message(storage_id, title, "user", author, text, bot_id=bot_id or 0)
 
     try:
-        messages = _ai_messages(key, text, author, is_private)
+        messages = _ai_messages(storage_id, text, author, is_private, bot_id)
         answer = call_ai(messages) or "（模型没有返回内容）"
     except BotError as exc:
         log.warning("AI 调用失败：%s", exc)
         # 同步到面板状态，否则用户只能翻容器日志才知道为什么没回复
-        _state["last_error"] = f"AI 调用失败：{exc}"
+        state["last_error"] = f"AI 调用失败：{exc}"
         try:
-            _reply(chat_id, f"AI 暂时不可用：{exc}", message.get("message_id"), biz)
+            _reply(chat_id, f"AI 暂时不可用：{exc}", message.get("message_id"), biz, bot_id)
         except BotError:
             pass
         return
 
-    db.add_ai_message(key, title, "assistant", "bot", answer)
-    if _state["last_error"].startswith("AI 调用失败"):
-        _state["last_error"] = ""
+    db.add_ai_message(storage_id, title, "assistant", "bot", answer, bot_id=bot_id or 0)
+    if state["last_error"].startswith("AI 调用失败"):
+        state["last_error"] = ""
     try:
-        _reply(chat_id, answer, message.get("message_id"), biz)
+        _reply(chat_id, answer, message.get("message_id"), biz, bot_id)
     except BotError:
         return
 
     _last_reply[key] = time.time()
     with _lock:
-        _state["replies"] += 1
+        state["replies"] = int(state.get("replies", 0)) + 1
         if biz:
-            _state["business_replies"] += 1
+            state["business_replies"] = int(state.get("business_replies", 0)) + 1
 
 
 # ---------------- 轮询循环 ----------------
 
-def _poll_loop(stop: threading.Event) -> None:
+def _poll_loop(stop: threading.Event, bot_id: int | None = None) -> None:
+    rt = _runtime(bot_id)
+    state = rt["state"]
     backoff = 2.0
     while not stop.is_set():
-        if not enabled():
+        if not enabled(bot_id):
             stop.wait(5)
             continue
-        token = db.get_setting("bot_token", "").strip()
+        token = token_of(bot_id)
         if not token:
             stop.wait(5)
             continue
 
+        record = _record(bot_id) or {}
         try:
-            offset = int(db.get_setting("bot_update_offset", "0") or 0)
+            offset = int(str(record.get("update_offset") or "0") or 0)
         except ValueError:
             offset = 0
 
         with _lock:
-            _state["last_poll"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            state["last_poll"] = time.strftime("%Y-%m-%d %H:%M:%S")
 
         try:
             updates = _api(
@@ -528,11 +627,11 @@ def _poll_loop(stop: threading.Event) -> None:
             )
             backoff = 2.0
             with _lock:
-                _state["last_error"] = ""
+                state["last_error"] = ""
         except BotError as exc:
             with _lock:
-                _state["last_error"] = str(exc)
-            log.warning("拉取更新失败：%s", exc)
+                state["last_error"] = str(exc)
+            log.warning("拉取更新失败（机器人 %s）：%s", bot_id, exc)
             # token 无效时不要疯跑，退避等待
             stop.wait(min(backoff, 60))
             backoff = min(backoff * 2, 60)
@@ -541,24 +640,25 @@ def _poll_loop(stop: threading.Event) -> None:
         for update in updates or []:
             update_id = update.get("update_id")
             if isinstance(update_id, int):
-                db.set_setting("bot_update_offset", update_id + 1)
+                fresh = _record(bot_id) or {}
+                _persist(fresh, update_offset=str(update_id + 1))
             try:
                 member = update.get("my_chat_member")
                 if member:
                     # 机器人被拉进群 / 被踢出群：记下群信息，面板可选
-                    remember_chat(member.get("chat") or {})
+                    remember_chat(member.get("chat") or {}, bot_id)
                     continue
                 conn = update.get("business_connection")
                 if conn:
-                    _handle_business_connection(conn)
+                    _handle_business_connection(conn, bot_id)
                     continue
                 # business_message 是「以用户身份」收发的私聊消息
                 message = update.get("message") or update.get("business_message") or {}
                 if not message:
                     continue
                 # 顺便缓存群消息：签到结果校验要用（见 checkin()）
-                _remember_group_message(message)
-                _handle_message(message)
+                _remember_group_message(message, bot_id)
+                _handle_message(message, bot_id)
             except Exception as exc:  # 单条消息出错不能拖垮整个循环
                 log.exception("处理消息异常：%s", exc)
 
@@ -567,67 +667,147 @@ def _poll_loop(stop: threading.Event) -> None:
             stop.wait(1)
 
 
-def start() -> None:
-    global _thread, _stop
-    # 没有 token 或未启用时不起线程：既省资源，也避免面板显示「正在运行」造成误解
-    if not (db.get_setting("bot_token", "") or "").strip() or not enabled():
+def _start_one(bot_id: int | None = None) -> None:
+    rt = _runtime(bot_id)
+    if not token_of(bot_id) or not enabled(bot_id):
         with _lock:
-            _state["running"] = False
+            rt["state"]["running"] = False
         return
     with _lock:
-        if _thread is not None and _thread.is_alive():
+        thread = rt.get("thread")
+        if thread is not None and thread.is_alive():
             return
-        _stop = threading.Event()
-        _thread = threading.Thread(target=_poll_loop, args=(_stop,), name="bot-poll", daemon=True)
-        _state["running"] = True
-        _state["started_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-    _thread.start()
-    log.info("AI 机器人轮询线程已启动")
+        stop = threading.Event()
+        rt["stop"] = stop
+        rt["thread"] = threading.Thread(
+            target=_poll_loop, args=(stop, bot_id),
+            name=f"bot-poll-{bot_id or DEFAULT_RUNTIME_KEY}", daemon=True,
+        )
+        rt["state"]["running"] = True
+        rt["state"]["started_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    rt["thread"].start()
+    log.info("机器人 %s 轮询线程已启动", bot_id)
 
 
-def stop() -> None:
-    global _thread, _stop
+def _stop_one(bot_id: int | None = None) -> None:
+    rt = _runtime(bot_id)
     with _lock:
-        if _stop is not None:
-            _stop.set()
-        _thread = None
-        _stop = None
-        _state["running"] = False
+        stop = rt.get("stop")
+        if stop is not None:
+            stop.set()
+        rt["thread"] = None
+        rt["stop"] = None
+        rt["state"]["running"] = False
 
 
-def restart() -> None:
-    stop()
-    start()
+def start(bot_id: int | None = None) -> None:
+    """启动轮询：不传 bot_id 就把当前所有启用的机器人全部拉起来。"""
+    if bot_id:
+        _start_one(bot_id)
+        return
+    records = db.list_bots()
+    if records:
+        for item in records:
+            _start_one(item.get("id"))
+        return
+    # 老配置（没有 bots 表记录）仍按单机器人跑
+    _start_one(None)
 
 
-def status() -> dict[str, Any]:
+def stop(bot_id: int | None = None) -> None:
+    if bot_id:
+        _stop_one(bot_id)
+        return
     with _lock:
-        snapshot = dict(_state)
+        keys = list(_runtimes.keys())
+    for key in keys:
+        _stop_one(None if key == DEFAULT_RUNTIME_KEY else key)
+    _last_reply.clear()
+
+
+def restart(bot_id: int | None = None) -> None:
+    stop(bot_id)
+    start(bot_id)
+
+
+def _status_one(bot_id: int | None = None) -> dict[str, Any]:
+    rt = _runtime(bot_id)
+    snapshot = dict(rt["state"])
     cfg = _cfg()
-    token = (cfg.get("bot_token") or "").strip()
+    record = _record(bot_id) or {}
+    token = str(record.get("token") or "").strip()
+    thread = rt.get("thread")
     return {
-        "enabled": enabled(),
-        "running": bool(snapshot["running"] and _thread is not None and _thread.is_alive()),
+        "id": record.get("id"),
+        "name": record.get("name") or "",
+        "enabled": bool(record.get("enabled")),
+        "running": bool(snapshot["running"] and thread is not None and thread.is_alive()),
         "token_set": bool(token),
-        "bot_name": snapshot["bot_name"] or (cfg.get("bot_username") or ""),
-        "bot_username": snapshot["bot_username"] or (cfg.get("bot_username") or ""),
-        "trigger": _trigger_mode(),
-        "last_poll": snapshot["last_poll"],
-        "last_error": snapshot["last_error"],
-        "replies": snapshot["replies"],
+        "bot_name": snapshot.get("bot_name") or record.get("username") or "",
+        "bot_username": snapshot.get("bot_username") or record.get("username") or "",
+        "trigger": _trigger_mode(bot_id),
+        "last_poll": snapshot.get("last_poll", ""),
+        "last_error": snapshot.get("last_error", ""),
+        "replies": snapshot.get("replies", 0),
         "business_replies": snapshot.get("business_replies", 0),
-        "business": list(business_connections().values()),
-        "started_at": snapshot["started_at"],
+        "business": list(business_connections(bot_id).values()),
+        "started_at": snapshot.get("started_at", ""),
+        "chats": known_chats(bot_id),
+        "stats": db.ai_stats(bot_id if bot_id else None),
         "ai_base_url": cfg.get("ai_base_url", ""),
         "ai_model": cfg.get("ai_model", ""),
         "ai_key_set": bool((cfg.get("ai_api_key") or "").strip()),
-        "stats": db.ai_stats(),
     }
 
 
-def send_test_message(chat_id: str, text: str) -> dict[str, Any]:
+def status(bot_id: int | None = None) -> dict[str, Any]:
+    """面板展示用：不传 bot_id 返回汇总（含每个机器人的明细）。"""
+    if bot_id:
+        return _status_one(bot_id)
+
+    records = db.list_bots()
+    items = [_status_one(item.get("id")) for item in records]
+    if not items:
+        items = [_status_one(None)]
+    total_replies = sum(int(i.get("replies") or 0) for i in items)
+    total_business = sum(int(i.get("business_replies") or 0) for i in items)
+    primary = items[0]
+    return {
+        **primary,
+        "id": primary.get("id"),
+        "bots": [
+            {
+                "id": i.get("id"),
+                "name": i.get("name"),
+                "username": i.get("bot_username"),
+                "enabled": i.get("enabled"),
+                "running": i.get("running"),
+                "token_set": i.get("token_set"),
+                "trigger": i.get("trigger"),
+                "last_poll": i.get("last_poll"),
+                "last_error": i.get("last_error"),
+                "replies": i.get("replies"),
+                "business": i.get("business"),
+                "business_replies": i.get("business_replies"),
+            }
+            for i in items
+        ],
+        "running": any(bool(i.get("running")) for i in items),
+        "enabled": any(bool(i.get("enabled")) for i in items),
+        "token_set": any(bool(i.get("token_set")) for i in items),
+        "replies": total_replies,
+        "business_replies": total_business,
+    }
+
+
+def bot_detail(bot_id: int) -> dict[str, Any]:
+    """面板拉某个机器人的状态时用，避免和汇总混在一起。"""
+    return _status_one(bot_id)
+
+
+def send_test_message(chat_id: str, text: str, bot_id: int | None = None) -> dict[str, Any]:
     """从面板直接发一条消息，用来验证机器人是否在目标会话里。"""
-    token = db.get_setting("bot_token", "")
+    token = token_of(bot_id)
     if not str(chat_id).strip():
         raise BotError("请填写目标会话 ID 或 @频道用户名")
     _api("sendMessage", token, {"chat_id": str(chat_id).strip(), "text": text[:4000]})
@@ -643,8 +823,6 @@ def send_test_message(chat_id: str, text: str) -> dict[str, Any]:
 # 所以轮询没开时只能确认「消息已发出」，判断不了签到是否成功。
 
 _RECENT_LIMIT = 40
-_recent_lock = threading.RLock()
-_recent: dict[str, list[dict[str, Any]]] = {}
 
 _LINK_PREFIXES = (
     "https://t.me/",
@@ -685,12 +863,12 @@ def normalize_chat(value: str) -> Any:
     return "@" + text
 
 
-def _remember_group_message(message: dict[str, Any]) -> None:
+def _remember_group_message(message: dict[str, Any], bot_id: int | None = None) -> None:
     """缓存群里的消息，供签到结果校验使用。"""
     chat = message.get("chat") or {}
     if (chat.get("type") or "") not in ("group", "supergroup"):
         return
-    remember_chat(chat)
+    remember_chat(chat, bot_id)
     text = message.get("text") or message.get("caption") or ""
     if not str(text).strip():
         return
@@ -706,21 +884,26 @@ def _remember_group_message(message: dict[str, Any]) -> None:
     key = str(chat.get("id") or "")
     if not key:
         return
-    with _recent_lock:
-        bucket = _recent.setdefault(key, [])
+    rt = _runtime(bot_id)
+    with rt["recent_lock"]:
+        bucket = rt["recent"].setdefault(key, [])
         bucket.append(item)
         del bucket[:-_RECENT_LIMIT]
 
 
-def recent_group_messages(chat_key: Any, since_id: int = 0) -> list[dict[str, Any]]:
+def recent_group_messages(
+    chat_key: Any, since_id: int = 0, bot_id: int | None = None
+) -> list[dict[str, Any]]:
     key = str(chat_key)
-    with _recent_lock:
-        return [m for m in _recent.get(key, []) if m.get("id", 0) > since_id]
+    rt = _runtime(bot_id)
+    with rt["recent_lock"]:
+        return [m for m in rt["recent"].get(key, []) if m.get("id", 0) > since_id]
 
 
-def known_chats() -> list[dict[str, Any]]:
+def known_chats(bot_id: int | None = None) -> list[dict[str, Any]]:
     """机器人待过的群：面板里点一下就能填进群组表单，省得自己找群 ID。"""
-    raw = db.get_setting("known_chats", "")
+    record = _record(bot_id) or {}
+    raw = str(record.get("known_chats") or "") or db.get_setting("known_chats", "")
     if not raw:
         return []
     try:
@@ -730,26 +913,35 @@ def known_chats() -> list[dict[str, Any]]:
     return data if isinstance(data, list) else []
 
 
-def remember_chat(chat: dict[str, Any]) -> None:
+def remember_chat(chat: dict[str, Any], bot_id: int | None = None) -> None:
     if (chat.get("type") or "") not in ("group", "supergroup"):
         return
     chat_id = chat.get("id")
     if chat_id is None:
         return
     title = chat.get("title") or chat.get("username") or str(chat_id)
-    items = [c for c in known_chats() if c.get("id") != chat_id]
+    items = [c for c in known_chats(bot_id) if c.get("id") != chat_id]
     items.insert(0, {"id": chat_id, "title": title, "username": chat.get("username") or ""})
-    db.set_setting("known_chats", json.dumps(items[:50], ensure_ascii=False))
+    payload = json.dumps(items[:50], ensure_ascii=False)
+    record = _record(bot_id)
+    if record and record.get("id"):
+        db.update_bot(int(record["id"]), {"known_chats": payload})
+    db.set_setting("known_chats", payload)
 
 
-def polling_alive() -> bool:
+def polling_alive(bot_id: int | None = None) -> bool:
+    rt = _runtime(bot_id)
     with _lock:
-        return bool(_state["running"] and _thread is not None and _thread.is_alive())
+        thread = rt.get("thread")
+        return bool(rt["state"]["running"] and thread is not None and thread.is_alive())
 
 
-def send_text(chat_id: Any, text: str) -> dict[str, Any]:
+def send_text(chat_id: Any, text: str, group: dict[str, Any] | None = None) -> dict[str, Any]:
     """用机器人发一条纯文本（通知用）。"""
-    token = db.get_setting("bot_token", "")
+    bot_id = (group or {}).get("bot_id")
+    from .telegram import resolve_bot_token  # 延迟导入避免循环依赖
+
+    token = resolve_bot_token(group) if group else token_of(bot_id)
     return _api(
         "sendMessage",
         token,
@@ -806,9 +998,18 @@ def _resolve_target(token: str, target: Any) -> tuple[Any, str]:
 
 def checkin(group: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
     """用机器人给群发签到消息，返回 {"note":…, "failed":…}。"""
-    token = (cfg.get("bot_token") or "").strip()
+    from .telegram import resolve_bot_token
+
+    raw_bot_id = group.get("bot_id")
+    bot_id: int | None = None
+    if raw_bot_id:
+        try:
+            bot_id = int(raw_bot_id)
+        except (TypeError, ValueError):
+            bot_id = None
+    token = resolve_bot_token(group)
     if not token:
-        raise BotError("没有 Bot Token，无法用机器人签到。请到「AI 机器人」页填写 Token")
+        raise BotError("没有 Bot Token，无法用机器人签到。请到「AI 机器人」页添加一个机器人")
 
     target = normalize_chat(group.get("chat", ""))
     command = (group.get("command") or "签到").strip() or "签到"
@@ -833,7 +1034,7 @@ def checkin(group: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
     time.sleep(2.5)
     replies = [
         item
-        for item in recent_group_messages(chat_key, sent_id)
+        for item in recent_group_messages(chat_key, sent_id, bot_id)
         if item.get("from") != self_id
     ]
     texts = [item["text"] for item in replies if item.get("text")][:3]
@@ -841,12 +1042,21 @@ def checkin(group: dict[str, Any], cfg: dict[str, str]) -> dict[str, Any]:
     keywords = [k.strip() for k in str(cfg.get("fail_keywords", "")).split(",") if k.strip()]
     failed = any(any(k in text for k in keywords) for text in texts) if keywords else False
 
+    record = db.get_bot(bot_id) if bot_id else None
+    bot_label = (record or {}).get("username") or (record or {}).get("name") or ""
+
     if texts:
         note = " | ".join(texts)
-    elif polling_alive():
+    elif polling_alive(bot_id):
         note = f"已在「{title}」发出 {command}，未捕获到签到机器人的回复"
     else:
         note = f"已在「{title}」发出 {command}（机器人轮询未开启，未校验结果）"
     if hint:
         note = f"{hint}｜{note}"
-    return {"note": note, "message_id": sent_id, "failed": failed, "chat_title": title}
+    return {
+        "note": note,
+        "message_id": sent_id,
+        "failed": failed,
+        "chat_title": title,
+        "bot": bot_label or "机器人",
+    }

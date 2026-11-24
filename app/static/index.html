@@ -80,7 +80,7 @@
             </div>
             <div class="notice">
               <strong>运行机制</strong>
-              <p>服务按每个群组配置的 cron 时间往群里发签到指令。签到方式在「系统设置 → 谁来签到」里切换：默认用机器人（只需 Bot Token，机器人必须先被拉进群），也可以切回自己的账号（需要 api_id）。发送后会尝试捕获机器人回复并写入日志。</p>
+              <p>服务按每个群组配置的 cron 时间往群里发签到指令。可以接多个 Telegram 账号和多个机器人，每个群组单独指定「用哪个账号 / 哪个机器人」签到，没指定就跟随「系统设置 → 谁来签到」的默认值。定时点没在线（容器休眠或重启）时，补签线程会在上线后立刻补一次，保证每天至少成功一次。</p>
             </div>
           </div>
         </div>
@@ -95,6 +95,15 @@
             <label class="field"><span>群组链接 / 用户名 / ID</span><input name="chat" placeholder="@mygroup 或 -1001234567890（机器人需已在群里）" required></label>
             <label class="field"><span>签到指令</span><input name="command" value="签到" placeholder="签到、/checkin 或自定义文本"></label>
             <label class="field"><span>启用状态</span><select name="enabled"><option value="1">启用</option><option value="0">暂停</option></select></label>
+            <label class="field"><span>签到方式</span>
+              <select name="mode">
+                <option value="">跟随全局设置</option>
+                <option value="user">用我的账号（Telethon）</option>
+                <option value="bot">用机器人（Bot API）</option>
+              </select>
+            </label>
+            <label class="field"><span>用哪个账号</span><select name="account_id" id="groupAccountSelect"><option value="">默认账号</option></select></label>
+            <label class="field"><span>用哪个机器人</span><select name="bot_id" id="groupBotSelect"><option value="">默认机器人</option></select></label>
             <div class="span-2" id="knownChatsBox" hidden>
               <span class="muted">机器人已经在这些群里，点一下自动填入：</span>
               <div class="presets" id="knownChatsList"></div>
@@ -120,7 +129,7 @@
           <div class="card-head"><h3>已配置群组</h3><span class="muted" id="groupCount">0 个</span></div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>名称</th><th>群组</th><th>签到指令</th><th>时间 / 下次执行</th><th>状态</th><th>操作</th></tr></thead>
+              <thead><tr><th>名称</th><th>群组</th><th>签到指令</th><th>执行者</th><th>时间 / 下次执行</th><th>状态</th><th>操作</th></tr></thead>
               <tbody id="groupTableBody"></tbody>
             </table>
           </div>
@@ -130,30 +139,49 @@
       <!-- 账号与登录 -->
       <section id="tab-account" class="tab-panel">
         <div class="card">
-          <div class="card-head"><h3>Telegram API 凭据</h3><span class="muted">从 <a href="https://my.telegram.org/apps" target="_blank" rel="noopener">my.telegram.org/apps</a> 获取</span></div>
+          <div class="card-head"><h3>我的 Telegram 账号</h3><span class="muted" id="accountCount">0 个</span></div>
+          <p class="muted" style="margin:0 0 14px">可以添加多个账号，每个群组可以指定用哪个账号签到。签到指令默认是「签到」两个字，用账号发出去才算本人签到。</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>名称</th><th>手机号</th><th>API ID</th><th>登录状态</th><th>启用</th><th>操作</th></tr></thead>
+              <tbody id="accountTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head" id="accountFormTitle">添加账号</div>
           <form id="accountForm" class="form-grid">
-            <label class="field"><span>API ID</span><input name="api_id" placeholder="纯数字" required></label>
-            <label class="field"><span>API Hash</span><input name="api_hash" placeholder="32 位字符串" required></label>
-            <label class="field"><span>手机号</span><input name="phone" placeholder="+8613800138000" required></label>
-            <label class="field"><span>代理（可选）</span><input name="proxy_url" placeholder="socks5://user:pass@host:1080"></label>
-            <div class="span-2 form-actions"><button type="submit" class="btn primary">保存凭据</button></div>
+            <label class="field"><span>账号备注名</span><input name="name" placeholder="例如：主号 / 小号"></label>
+            <label class="field"><span>手机号</span><input name="phone" placeholder="+8613800138000"></label>
+            <label class="field"><span>API ID</span><input name="api_id" placeholder="纯数字，从 my.telegram.org/apps 获取"></label>
+            <label class="field"><span>API Hash</span><input name="api_hash" placeholder="32 位字符串"></label>
+            <label class="field span-2"><span>代理（可选）</span><input name="proxy_url" placeholder="socks5://user:pass@host:1080"></label>
+            <div class="span-2 form-actions">
+              <button type="submit" class="btn primary" id="accountSubmitBtn">保存账号</button>
+              <button type="button" class="btn ghost hidden" id="accountCancelBtn">取消编辑</button>
+            </div>
           </form>
+          <div class="notice">
+            <strong>API 凭据怎么来</strong>
+            <p>打开 <a href="https://my.telegram.org/apps" target="_blank" rel="noopener">my.telegram.org/apps</a> 登录后创建应用，复制 api_id 和 api_hash。每个账号可以用同一套凭据，但建议各用一套，避免同 IP 多账号同时登录被风控。</p>
+          </div>
         </div>
 
         <div class="card">
           <div class="card-head"><h3>登录状态</h3><span id="accountState" class="badge">未检查</span></div>
           <div class="account-box">
-            <div id="accountInfo" class="muted">点击「检查登录状态」查看当前会话。</div>
+            <div id="accountInfo" class="muted">先在上面的列表里选一个账号，再点「扫码登录」。</div>
             <div class="form-actions">
               <button id="checkAccountBtn" class="btn">检查登录状态</button>
               <button id="loginStartBtn" class="btn">用验证码登录</button>
               <button id="qrStartBtn" class="btn primary">扫码登录</button>
-              <button id="tgLogoutBtn" class="btn danger">退出 Telegram 账号</button>
+              <button id="tgLogoutBtn" class="btn danger">退出当前账号</button>
             </div>
           </div>
           <div class="notice">
             <strong>登录说明</strong>
-            <p>两种方式任选其一。扫码更省事：点「扫码登录」后出二维码，用手机 Telegram（设置 → 设备 → 连接设备，或直接扫）扫一下即可，不需要等短信。验证码方式则会在 Telegram 官方对话里收到一串码。若账号开启了两步验证，两者都会再要求输入验证密码。登录会话保存在容器数据目录中，重启不会丢失。</p>
+            <p>两种方式任选其一。扫码更省事：点「扫码登录」后出现二维码，用手机 Telegram（设置 → 设备 → 连接设备）扫一下即可，不需要等短信。验证码方式则会在 Telegram 官方对话里收到一串码。若账号开启了两步验证，两者都会再要求输入验证密码。登录会话分别保存在各自的账号记录里，互不影响，重启容器也不会丢失。</p>
           </div>
         </div>
 
@@ -193,15 +221,23 @@
             <label class="field"><span>谁来签到</span><select name="checkin_mode"><option value="bot">机器人（只要 Bot Token，推荐）</option><option value="user">自己的账号（需要 api_id）</option></select></label>
             <label class="field"><span>模拟运行</span><select name="dry_run"><option value="0">关闭（真实发送）</option><option value="1">开启（不发送消息）</option></select></label>
             <label class="field"><span>面板密码（留空不修改）</span><input name="panel_password" type="password" placeholder="留空保持原密码"></label>
+            <label class="field"><span>每日补签（上线即补）</span><select name="catchup_enabled"><option value="1">开启（推荐）</option><option value="0">关闭</option></select></label>
+            <label class="field"><span>补签检查间隔（秒，120-3600）</span><input name="catchup_interval" type="number" min="120" max="3600" value="600"></label>
+            <label class="field"><span>同群补签冷却（秒）</span><input name="catchup_cooldown" type="number" min="0" value="1800"></label>
             <label class="field"><span>保活自检</span><select name="keepalive_enabled"><option value="0">关闭</option><option value="1">开启（定时请求自身地址）</option></select></label>
             <label class="field"><span>保活间隔（秒，最小 60）</span><input name="keepalive_interval" type="number" min="60" max="3600" value="300"></label>
             <label class="field span-2"><span>保活目标地址（留空自动探测）</span><input name="keepalive_url" placeholder="https://你的域名，程序会请求该地址的 /health"></label>
             <div class="span-2 form-actions">
               <button type="submit" class="btn primary">保存设置</button>
+              <button type="button" class="btn" id="catchupRunBtn">立即补签一次</button>
               <button type="button" class="btn" id="keepalivePingBtn">立即自检</button>
               <button type="button" class="btn" id="exportConfigBtn">导出配置（含登录会话）</button>
             </div>
           </form>
+          <div class="notice" id="catchupNotice">
+            <strong>补签状态</strong>
+            <p id="catchupText">加载中…</p>
+          </div>
           <div class="notice" id="keepaliveNotice">
             <strong>保活状态</strong>
             <p id="keepaliveText">加载中…</p>
@@ -211,32 +247,162 @@
           <strong>提示</strong>
           <p>cron 为 5 段格式：分 时 日 月 周。随机延迟会在每次发送前增加 0 到设定值之间的等待，降低固定时间点的机械特征。模拟运行适合先验证连接和群组是否正确。</p>
         </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>备份与恢复</h3>
+            <span class="muted" id="backupSummary">加载中…</span>
+          </div>
+          <div class="notice">
+            <strong>备份文件里有什么</strong>
+            <p>一份 JSON：群组、账号、机器人、全部设置，以及 Telegram 登录会话。把它当密码一样保管。恢复时账号和机器人会重新生成编号，群组里的「用哪个账号 / 哪个机器人」会自动对上，不会指错人。</p>
+          </div>
+          <form id="backupForm" class="form-grid" style="margin-top:14px">
+            <label class="field"><span>自动备份</span>
+              <select name="backup_auto"><option value="1">开启</option><option value="0">关闭</option></select>
+            </label>
+            <label class="field"><span>备份间隔（小时，1-168）</span>
+              <input name="backup_interval" type="number" min="1" max="168" value="12">
+            </label>
+            <label class="field"><span>本地保留份数（1-200）</span>
+              <input name="backup_keep" type="number" min="1" max="200" value="14">
+            </label>
+            <label class="field"><span>启动时自动恢复</span>
+              <select name="backup_restore_on_boot">
+                <option value="1">开启（容器重建后自动拉回数据）</option>
+                <option value="0">关闭</option>
+              </select>
+            </label>
+            <div class="span-2 form-actions">
+              <button type="submit" class="btn primary">保存备份设置</button>
+              <button type="button" class="btn" id="backupRunBtn">立即备份一次</button>
+              <button type="button" class="btn" id="backupExportBtn">下载备份文件</button>
+              <button type="button" class="btn" id="backupUploadBtn">从文件恢复…</button>
+              <input id="backupFile" type="file" accept="application/json,.json" hidden>
+            </div>
+            <label class="field"><span>恢复方式</span>
+              <select name="restore_mode">
+                <option value="replace">替换（先清空再导入，迁移用这个）</option>
+                <option value="merge">合并（只补缺失，按手机号/Token/群组去重）</option>
+              </select>
+            </label>
+            <label class="field"><span>面板密码</span>
+              <select name="restore_password">
+                <option value="0">保留当前密码</option>
+                <option value="1">恢复成备份里的密码</option>
+              </select>
+            </label>
+          </form>
+          <p id="backupStatusText" class="muted" style="margin:14px 0 0">加载中…</p>
+          <div class="table-wrap" style="margin-top:12px">
+            <table>
+              <thead><tr><th>本地备份</th><th>大小</th><th>时间</th><th>操作</th></tr></thead>
+              <tbody id="backupLocalBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>WebDAV 云备份</h3>
+            <span class="muted" id="webdavState">未配置</span>
+          </div>
+          <p class="muted" style="margin:0 0 14px">坚果云、Nextcloud、群晖、InfiniCLOUD 都行。填到目录为止，程序会直接往这个目录里 PUT 文件。</p>
+          <form id="webdavForm" class="form-grid">
+            <label class="field span-2"><span>WebDAV 地址</span>
+              <input name="webdav_url" placeholder="https://dav.jianguoyun.com/dav/tg-checkin">
+            </label>
+            <label class="field"><span>用户名</span><input name="webdav_username" placeholder="通常是邮箱"></label>
+            <label class="field"><span>密码 / 应用密码</span><input name="webdav_password" type="password" placeholder="留空表示不修改"></label>
+            <label class="field"><span>自动上传</span>
+              <select name="webdav_auto"><option value="1">开启（跟随自动备份）</option><option value="0">关闭</option></select>
+            </label>
+            <label class="field"><span>云端保留份数（1-200）</span>
+              <input name="webdav_keep" type="number" min="1" max="200" value="14">
+            </label>
+            <div class="span-2 form-actions">
+              <button type="submit" class="btn primary">保存 WebDAV 设置</button>
+              <button type="button" class="btn" id="webdavTestBtn">测试连接</button>
+              <button type="button" class="btn" id="webdavUploadBtn">立即上传</button>
+              <button type="button" class="btn ghost" id="webdavListBtn">刷新云端列表</button>
+            </div>
+          </form>
+          <div class="table-wrap" style="margin-top:12px">
+            <table>
+              <thead><tr><th>云端备份</th><th>操作</th></tr></thead>
+              <tbody id="webdavBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>GitHub 同步</h3>
+            <span class="muted" id="githubState">未配置</span>
+          </div>
+          <p class="muted" style="margin:0 0 14px">每次备份作为一次 commit 推到仓库，天然带版本历史，还能拿 GitHub 当免费的对象存储。建议用一个私有仓库专门放备份。</p>
+          <form id="githubForm" class="form-grid">
+            <label class="field span-2"><span>Personal Access Token（需要 repo 权限）</span>
+              <input name="github_token" type="password" placeholder="ghp_... 留空表示不修改">
+            </label>
+            <label class="field"><span>仓库</span><input name="github_repo" placeholder="yourname/tg-checkin-data"></label>
+            <label class="field"><span>分支</span><input name="github_branch" placeholder="main"></label>
+            <label class="field"><span>存放目录</span><input name="github_path" placeholder="tgck-backups"></label>
+            <label class="field"><span>自动同步</span>
+              <select name="github_auto"><option value="1">开启（跟随自动备份）</option><option value="0">关闭</option></select>
+            </label>
+            <label class="field"><span>保留份数（1-200）</span>
+              <input name="github_keep" type="number" min="1" max="200" value="14">
+            </label>
+            <div class="span-2 form-actions">
+              <button type="submit" class="btn primary">保存 GitHub 设置</button>
+              <button type="button" class="btn" id="githubTestBtn">测试连接</button>
+              <button type="button" class="btn" id="githubUploadBtn">立即同步</button>
+              <button type="button" class="btn ghost" id="githubListBtn">刷新云端列表</button>
+            </div>
+          </form>
+          <div class="table-wrap" style="margin-top:12px">
+            <table>
+              <thead><tr><th>云端备份</th><th>操作</th></tr></thead>
+              <tbody id="githubBody"></tbody>
+            </table>
+          </div>
+        </div>
       </section>
 
       <!-- AI 聊天机器人 -->
       <section id="tab-bot" class="tab-panel">
         <div class="card">
           <div class="card-head">
-            <h3>机器人状态</h3>
-            <button id="botRestartBtn" class="btn ghost small">重启轮询</button>
+            <h3>我的机器人</h3>
+            <div class="filter-bar">
+              <button id="botRestartBtn" class="btn ghost small">重启全部轮询</button>
+            </div>
           </div>
           <div class="notice">
-            <strong>这个机器人不需要 api_id</strong>
-            <p>它走 Bot API，只用 BotFather 给的 token。注意：机器人发消息不等于你本人签到，签到功能仍需在「账号与登录」里配置。</p>
+            <strong>机器人不需要 api_id</strong>
+            <p>走 Bot API，只用 BotFather 给的 token。可以接多个机器人，各自一条轮询线程、各自的群列表和秘书模式绑定，互不干扰。注意：机器人发消息不等于你本人签到；要算本人签到，请用「账号与登录」里的账号，并在群组里把签到方式选成「用我的账号」。</p>
+          </div>
+          <div class="table-wrap" style="margin-top:14px">
+            <table>
+              <thead><tr><th>名称</th><th>用户名</th><th>触发</th><th>轮询</th><th>已回复</th><th>启用</th><th>操作</th></tr></thead>
+              <tbody id="botTableBody"></tbody>
+            </table>
           </div>
           <p id="botStatusText" class="muted" style="margin-top:12px">加载中…</p>
         </div>
 
         <div class="card">
-          <h3>接入机器人</h3>
+          <div class="card-head" id="botFormTitle">添加机器人</div>
           <ol class="muted" style="line-height:1.9;padding-left:18px;margin:10px 0 16px">
             <li>在 Telegram 搜索 <strong>@BotFather</strong>，发送 <code>/newbot</code></li>
             <li>按提示起名字和用户名（用户名必须以 bot 结尾）</li>
-            <li>把 BotFather 返回的 token 粘到下面，点「校验并保存」</li>
-            <li>私聊里先给你的机器人发一句话，或在群里把它拉进去并给「读取消息」权限</li>
+            <li>把 BotFather 返回的 token 粘到下面，点「校验并添加」</li>
+            <li>私聊里先给机器人发一句话，或在群里把它拉进去并给「读取消息」权限</li>
           </ol>
           <form id="botForm" class="form-grid">
-            <label class="field span-2"><span>Bot Token</span><input name="bot_token" placeholder="123456789:AAH...（留空表示不修改）"></label>
+            <label class="field"><span>备注名（可选）</span><input name="name" placeholder="例如：丧彪 / 提醒助手"></label>
+            <label class="field"><span>Bot Token</span><input name="bot_token" placeholder="123456789:AAH...（编辑时留空表示不修改）"></label>
             <label class="field"><span>触发方式</span>
               <select name="bot_trigger">
                 <option value="mention">私聊 + 群里被 @ 或回复时（推荐）</option>
@@ -245,10 +411,11 @@
               </select>
             </label>
             <label class="field"><span>启用</span>
-              <select name="bot_enabled"><option value="0">关闭</option><option value="1">开启</option></select>
+              <select name="bot_enabled"><option value="1">开启</option><option value="0">关闭</option></select>
             </label>
             <div class="span-2 form-actions">
-              <button type="button" class="btn primary" id="botVerifyBtn">校验并保存 Token</button>
+              <button type="button" class="btn primary" id="botVerifyBtn">校验并添加</button>
+              <button type="button" class="btn ghost hidden" id="botCancelBtn">取消编辑</button>
             </div>
           </form>
         </div>
