@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TG 签到控制台</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div id="loginScreen" class="login-screen hidden">
+  <div class="login-card">
+    <div class="login-logo">TG</div>
+    <h2>签到控制台</h2>
+    <p class="muted">请输入面板密码以继续</p>
+    <input id="panelPassword" type="password" placeholder="面板密码" autocomplete="current-password">
+    <button id="panelLoginBtn" class="btn primary block">进入控制台</button>
+    <p id="panelLoginError" class="error-text"></p>
+  </div>
+</div>
+
+<div class="layout">
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-mark">TG</span>
+      <div>
+        <strong>签到控制台</strong>
+        <small>Telegram Check-in</small>
+      </div>
+    </div>
+    <nav class="nav">
+      <button class="nav-item active" data-tab="dashboard"><span class="dot"></span>概览</button>
+      <button class="nav-item" data-tab="groups"><span class="dot"></span>群组管理</button>
+      <button class="nav-item" data-tab="account"><span class="dot"></span>账号与登录</button>
+      <button class="nav-item" data-tab="settings"><span class="dot"></span>系统设置</button>
+      <button class="nav-item" data-tab="logs"><span class="dot"></span>运行日志</button>
+    </nav>
+    <div class="sidebar-foot">
+      <span id="versionText">v1.0.0</span>
+      <span>本地部署 · 数据存于容器</span>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div>
+        <h1 id="pageTitle">概览</h1>
+        <p id="pageDesc" class="muted">自动签到任务运行状态一览</p>
+      </div>
+      <div class="top-actions">
+        <span id="accountBadge" class="badge">账号状态未知</span>
+        <button id="refreshBtn" class="btn ghost">刷新</button>
+        <button id="logoutBtn" class="btn ghost">退出</button>
+      </div>
+    </header>
+
+    <div class="content">
+
+      <!-- 概览 -->
+      <section id="tab-dashboard" class="tab-panel active">
+        <div class="stats-grid">
+          <div class="stat-card"><span class="stat-label">启用群组</span><strong id="statEnabled">0</strong><span class="stat-foot" id="statGroups">共 0 个群组</span></div>
+          <div class="stat-card ok"><span class="stat-label">今日成功</span><strong id="statSuccess">0</strong><span class="stat-foot">按本地日期统计</span></div>
+          <div class="stat-card err"><span class="stat-label">今日失败</span><strong id="statFailed">0</strong><span class="stat-foot">可到日志页查看详情</span></div>
+          <div class="stat-card"><span class="stat-label">累计执行</span><strong id="statTotal">0</strong><span class="stat-foot" id="statJobs">调度任务 0 个</span></div>
+        </div>
+
+        <div class="two-col">
+          <div class="card">
+            <div class="card-head"><h3>最近运行</h3><button class="link-btn" data-goto="logs">查看全部 ›</button></div>
+            <div id="recentLogs" class="empty">暂无运行记录</div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>快捷操作</h3></div>
+            <div class="quick-actions">
+              <button class="btn primary" data-goto="groups">添加签到群组</button>
+              <button class="btn" id="quickAccount">检查 Telegram 登录</button>
+              <button class="btn" id="quickRefresh">重新加载面板</button>
+            </div>
+            <div class="notice">
+              <strong>运行机制</strong>
+              <p>服务按每个群组配置的 cron 时间，用已登录的 Telegram 账号向群组发送指定签到指令。发送后会尝试捕获机器人回复并写入日志。</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 群组管理 -->
+      <section id="tab-groups" class="tab-panel">
+        <div class="card">
+          <div class="card-head"><h3 id="groupFormTitle">添加群组</h3><span class="muted" id="groupFormHint">先用自己的 Telegram 账号加入目标群组</span></div>
+          <form id="groupForm" class="form-grid">
+            <label class="field"><span>群组名称</span><input name="name" placeholder="例如：测试群" required></label>
+            <label class="field"><span>群组链接 / 用户名 / ID</span><input name="chat" placeholder="@mygroup 或 https://t.me/+xxx 或 -1001234567890" required></label>
+            <label class="field"><span>签到指令</span><input name="command" value="/checkin" placeholder="/checkin、/sign 或自定义文本"></label>
+            <label class="field"><span>启用状态</span><select name="enabled"><option value="1">启用</option><option value="0">暂停</option></select></label>
+            <label class="field span-2"><span>签到时间（cron，每行一个）</span>
+              <textarea name="schedule" rows="3" placeholder="0 8 * * *">0 8 * * *</textarea>
+            </label>
+            <div class="span-2 presets">
+              <span class="muted">快捷模板：</span>
+              <button type="button" class="chip" data-cron="0 8 * * *">每天 08:00</button>
+              <button type="button" class="chip" data-cron="0 8,20 * * *">每天 08:00 和 20:00</button>
+              <button type="button" class="chip" data-cron="0 */6 * * *">每 6 小时</button>
+              <button type="button" class="chip" data-cron="0 9 * * 1-5">工作日 09:00</button>
+            </div>
+            <div class="span-2 form-actions">
+              <button type="submit" class="btn primary" id="groupSubmitBtn">添加群组</button>
+              <button type="button" class="btn ghost hidden" id="groupCancelBtn">取消编辑</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>已配置群组</h3><span class="muted" id="groupCount">0 个</span></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>名称</th><th>群组</th><th>签到指令</th><th>时间 / 下次执行</th><th>状态</th><th>操作</th></tr></thead>
+              <tbody id="groupTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- 账号与登录 -->
+      <section id="tab-account" class="tab-panel">
+        <div class="card">
+          <div class="card-head"><h3>Telegram API 凭据</h3><span class="muted">从 <a href="https://my.telegram.org/apps" target="_blank" rel="noopener">my.telegram.org/apps</a> 获取</span></div>
+          <form id="accountForm" class="form-grid">
+            <label class="field"><span>API ID</span><input name="api_id" placeholder="纯数字" required></label>
+            <label class="field"><span>API Hash</span><input name="api_hash" placeholder="32 位字符串" required></label>
+            <label class="field"><span>手机号</span><input name="phone" placeholder="+8613800138000" required></label>
+            <label class="field"><span>代理（可选）</span><input name="proxy_url" placeholder="socks5://user:pass@host:1080"></label>
+            <div class="span-2 form-actions"><button type="submit" class="btn primary">保存凭据</button></div>
+          </form>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>登录状态</h3><span id="accountState" class="badge">未检查</span></div>
+          <div class="account-box">
+            <div id="accountInfo" class="muted">点击「检查登录状态」查看当前会话。</div>
+            <div class="form-actions">
+              <button id="checkAccountBtn" class="btn">检查登录状态</button>
+              <button id="loginStartBtn" class="btn primary">获取验证码并登录</button>
+              <button id="tgLogoutBtn" class="btn danger">退出 Telegram 账号</button>
+            </div>
+          </div>
+          <div class="notice">
+            <strong>登录说明</strong>
+            <p>点击「获取验证码并登录」后会向你的 Telegram 账号发送验证码（通常来自 Telegram 官方对话）。输入验证码即可；若账号开启两步验证，会继续要求输入验证密码。登录会话保存在容器数据目录中，重启不会丢失。</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- 系统设置 -->
+      <section id="tab-settings" class="tab-panel">
+        <div class="card">
+          <div class="card-head"><h3>运行参数</h3><span class="muted">修改后自动热重载调度任务</span></div>
+          <form id="settingsForm" class="form-grid">
+            <label class="field"><span>时区</span><input name="timezone" value="Asia/Shanghai" placeholder="Asia/Shanghai"></label>
+            <label class="field"><span>失败重试次数</span><input name="retry_count" type="number" min="0" max="5" value="2"></label>
+            <label class="field"><span>重试间隔（秒）</span><input name="retry_delay" type="number" min="0" value="10"></label>
+            <label class="field"><span>随机延迟上限（秒）</span><input name="jitter" type="number" min="0" value="5"></label>
+            <label class="field"><span>结果通知到会话</span><input name="notify_chat" placeholder="留空不通知，可填 @username 或自己的 ID"></label>
+            <label class="field"><span>失败关键词（逗号分隔）</span><input name="fail_keywords" placeholder="例如：签到失败,未到时间"></label>
+            <label class="field"><span>模拟运行</span><select name="dry_run"><option value="0">关闭（真实发送）</option><option value="1">开启（不发送消息）</option></select></label>
+            <label class="field"><span>面板密码（留空不修改）</span><input name="panel_password" type="password" placeholder="留空保持原密码"></label>
+            <div class="span-2 form-actions">
+              <button type="submit" class="btn primary">保存设置</button>
+              <button type="button" class="btn" id="exportConfigBtn">导出配置（含登录会话）</button>
+            </div>
+          </form>
+        </div>
+        <div class="notice wide">
+          <strong>提示</strong>
+          <p>cron 为 5 段格式：分 时 日 月 周。随机延迟会在每次发送前增加 0 到设定值之间的等待，降低固定时间点的机械特征。模拟运行适合先验证连接和群组是否正确。</p>
+        </div>
+      </section>
+
+      <!-- 运行日志 -->
+      <section id="tab-logs" class="tab-panel">
+        <div class="card">
+          <div class="card-head">
+            <h3>运行日志</h3>
+            <div class="filter-bar">
+              <select id="logStatus"><option value="">全部状态</option><option value="success">成功</option><option value="failed">失败</option></select>
+              <select id="logLimit"><option value="60">最近 60 条</option><option value="200">最近 200 条</option><option value="500">最近 500 条</option></select>
+              <button id="clearLogsBtn" class="btn ghost small">清空日志</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>时间</th><th>群组</th><th>来源</th><th>状态</th><th>备注 / 机器人回复</th><th>耗时</th></tr></thead>
+              <tbody id="logTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<div id="modal" class="modal hidden">
+  <div class="modal-card">
+    <h3 id="modalTitle">Telegram 登录</h3>
+    <p id="modalMessage" class="muted"></p>
+    <input id="modalInput" type="text" placeholder="请输入">
+    <p id="modalError" class="error-text"></p>
+    <div class="modal-actions">
+      <button id="modalCancel" class="btn ghost">取消</button>
+      <button id="modalConfirm" class="btn primary">确认</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
