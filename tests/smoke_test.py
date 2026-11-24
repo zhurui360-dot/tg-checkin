@@ -135,4 +135,24 @@ with TestClient(app) as client:
     assert bst2["enabled"] is True
     assert bst2["running"] is False, bst2
 
+    # Business（秘书模式）：状态字段存在，且能识别账号主人自己发的消息。
+    # 这条防护很关键——不加过滤会让 AI 对着自己的回复反复回，死循环烧额度。
+    assert isinstance(bst2.get("business"), list), bst2
+    assert bst2.get("business_replies") == 0, bst2
+    from app import bot as appbot  # noqa: E402
+    appdb.set_setting(
+        "business_connections",
+        '{"c1": {"owner_id": 999, "owner_name": "Owner", "is_enabled": true}}',
+    )
+    assert appbot.is_own_business_message(
+        {"business_connection_id": "c1", "from": {"id": 999}}
+    ) is True
+    assert appbot.is_own_business_message(
+        {"business_connection_id": "c1", "from": {"id": 111}}
+    ) is False
+    # 普通消息没有 business_connection_id，永远不算「自己的」
+    assert appbot.is_own_business_message({"from": {"id": 999}}) is False
+    assert client.get("/api/bot/status").json()["business"][0]["owner_name"] == "Owner"
+    appdb.set_setting("business_connections", "")
+
 print("冒烟测试通过：健康检查、鉴权、群组 CRUD、cron 校验、设置保存、保活自检、AI 机器人配置均正常")

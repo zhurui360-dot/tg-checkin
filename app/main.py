@@ -423,7 +423,7 @@ EXPORT_KEYS = {
     "fail_keywords", "dry_run",
     "bot_enabled", "bot_token", "bot_trigger", "ai_base_url", "ai_api_key",
     "ai_model", "ai_system_prompt", "ai_history_len", "ai_max_tokens",
-    "ai_temperature", "ai_min_interval", "ai_proxy",
+    "ai_temperature", "ai_min_interval", "ai_proxy", "business_connections",
 }
 
 

@@ -37,6 +37,7 @@ _state: dict[str, Any] = {
     "bot_name": "",
     "bot_username": "",
     "started_at": "",
+    "business_replies": 0,  # 以用户本人身份（Business）发出的条数
 }
 
 # 每个会话的上次回复时间，用于最小间隔限流
@@ -115,6 +116,7 @@ def verify_token(token: str | None = None) -> dict[str, Any]:
         "username": username,
         "can_join_groups": me.get("can_join_groups"),
         "can_read_all_group_messages": me.get("can_read_all_group_messages"),
+        "can_connect_to_business": me.get("can_connect_to_business"),
     }
 
 
@@ -308,9 +310,82 @@ def _should_reply(message: dict[str, Any], bot_username: str) -> tuple[bool, str
     return False, ""
 
 
-def _reply(chat_id: Any, text: str, reply_to: int | None) -> None:
+# ---------------- Business（秘书模式）----------------
+#
+# Telegram Business 允许把机器人绑定到用户账号，让它代表用户回复私聊。
+# 这条链路不需要 api_id：机器人读 business_message，回复时带上
+# business_connection_id，消息就以「用户本人」的身份出现在对方会话里。
+#
+# 关键坑：用户自己发的消息也会以 business_message 回显，如果不按 owner_id
+# 过滤，AI 会对着自己的回复再回一次，形成死循环。
+
+def business_connections() -> dict[str, Any]:
+    """已绑定的 Business 连接，key 是 business_connection_id。"""
+    raw = db.get_setting("business_connections", "")
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_business_connection(conn: dict[str, Any]) -> None:
+    conn_id = str(conn.get("id") or "")
+    if not conn_id:
+        return
+    user = conn.get("user") or {}
+    data = business_connections()
+    data[conn_id] = {
+        "owner_id": user.get("id"),
+        "owner_name": " ".join(
+            x for x in (user.get("first_name"), user.get("last_name")) if x
+        ) or user.get("username") or "",
+        "owner_username": user.get("username") or "",
+        "is_enabled": bool(conn.get("is_enabled")),
+        "can_reply": bool(conn.get("can_reply")),
+        "user_chat_id": conn.get("user_chat_id"),
+        "updated": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    db.set_setting("business_connections", json.dumps(data, ensure_ascii=False))
+    with _lock:
+        _state["business"] = list(data.values())
+
+
+def _handle_business_connection(conn: dict[str, Any]) -> None:
+    _save_business_connection(conn)
+    name = (conn.get("user") or {}).get("first_name") or "用户"
+    state = "已启用" if conn.get("is_enabled") else "已停用"
+    log.info("Business 连接更新：%s %s", name, state)
+
+
+def _business_owner_id(connection_id: str) -> Any:
+    info = business_connections().get(connection_id) or {}
+    return info.get("owner_id")
+
+
+def is_own_business_message(message: dict[str, Any]) -> bool:
+    """判断这条 business 消息是不是账号主人自己发的（含我们自己的回复回显）。"""
+    conn_id = message.get("business_connection_id")
+    if not conn_id:
+        return False
+    owner_id = _business_owner_id(conn_id)
+    sender_id = (message.get("from") or {}).get("id")
+    return owner_id is not None and sender_id == owner_id
+
+
+def _reply(
+    chat_id: Any,
+    text: str,
+    reply_to: int | None,
+    business_connection_id: str | None = None,
+) -> None:
     token = db.get_setting("bot_token", "")
     payload: dict[str, Any] = {"chat_id": chat_id, "text": text[:4000]}
+    if business_connection_id:
+        # 带上这个参数，消息才会以账号主人的身份发出
+        payload["business_connection_id"] = business_connection_id
     if reply_to:
         payload["reply_to_message_id"] = reply_to
     try:
@@ -326,6 +401,11 @@ def _handle_message(message: dict[str, Any]) -> None:
     chat = message.get("chat") or {}
     chat_id = chat.get("id")
     if chat_id is None:
+        return
+
+    # Business 模式下，账号主人自己的消息会回显，必须跳过，否则自问自答死循环
+    biz = message.get("business_connection_id")
+    if biz and is_own_business_message(message):
         return
 
     should, text = _should_reply(message, bot_username)
@@ -356,7 +436,7 @@ def _handle_message(message: dict[str, Any]) -> None:
         # 同步到面板状态，否则用户只能翻容器日志才知道为什么没回复
         _state["last_error"] = f"AI 调用失败：{exc}"
         try:
-            _reply(chat_id, f"AI 暂时不可用：{exc}", message.get("message_id"))
+            _reply(chat_id, f"AI 暂时不可用：{exc}", message.get("message_id"), biz)
         except BotError:
             pass
         return
@@ -365,13 +445,15 @@ def _handle_message(message: dict[str, Any]) -> None:
     if _state["last_error"].startswith("AI 调用失败"):
         _state["last_error"] = ""
     try:
-        _reply(chat_id, answer, message.get("message_id"))
+        _reply(chat_id, answer, message.get("message_id"), biz)
     except BotError:
         return
 
     _last_reply[key] = time.time()
     with _lock:
         _state["replies"] += 1
+        if biz:
+            _state["business_replies"] += 1
 
 
 # ---------------- 轮询循环 ----------------
@@ -402,7 +484,11 @@ def _poll_loop(stop: threading.Event) -> None:
                 {
                     "offset": offset,
                     "timeout": 50,
-                    "allowed_updates": ["message"],
+                    "allowed_updates": [
+                        "message",
+                        "business_connection",
+                        "business_message",
+                    ],
                 },
                 timeout=70,
             )
@@ -422,10 +508,15 @@ def _poll_loop(stop: threading.Event) -> None:
             update_id = update.get("update_id")
             if isinstance(update_id, int):
                 db.set_setting("bot_update_offset", update_id + 1)
-            message = update.get("message") or {}
-            if not message:
-                continue
             try:
+                conn = update.get("business_connection")
+                if conn:
+                    _handle_business_connection(conn)
+                    continue
+                # business_message 是「以用户身份」收发的私聊消息
+                message = update.get("message") or update.get("business_message") or {}
+                if not message:
+                    continue
                 _handle_message(message)
             except Exception as exc:  # 单条消息出错不能拖垮整个循环
                 log.exception("处理消息异常：%s", exc)
@@ -483,6 +574,8 @@ def status() -> dict[str, Any]:
         "last_poll": snapshot["last_poll"],
         "last_error": snapshot["last_error"],
         "replies": snapshot["replies"],
+        "business_replies": snapshot.get("business_replies", 0),
+        "business": list(business_connections().values()),
         "started_at": snapshot["started_at"],
         "ai_base_url": cfg.get("ai_base_url", ""),
         "ai_model": cfg.get("ai_model", ""),

@@ -49,6 +49,8 @@ DEFAULTS: dict[str, str] = {
     "ai_min_interval": "3",
     # 出网代理，留空表示直连。接口只对大陆网络开放、而主机在境外时填这里。
     "ai_proxy": os.getenv("AI_PROXY", "").strip(),
+    # Telegram Business 绑定信息（JSON），由程序写入，不需要手动配置
+    "business_connections": "",
 }
 
 

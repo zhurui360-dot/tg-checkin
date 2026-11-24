@@ -227,11 +227,15 @@
         const err = info.last_error ? ` · 最近错误：${info.last_error}` : "";
         const poll = info.last_poll ? ` · 上次拉取 ${info.last_poll}` : "";
         const st = info.stats || {};
+        const bizList = Array.isArray(info.business) ? info.business : [];
+        const biz = bizList.length
+          ? ` · 秘书模式已绑定 ${bizList.map((b) => b.owner_name || b.owner_id).join("、")}（代发 ${info.business_replies || 0} 条）`
+          : " · 秘书模式未绑定";
         box.textContent =
           `${info.bot_name || info.bot_username || "机器人"} · ${run} · 触发：${TRIGGER_TEXT[info.trigger] || info.trigger}` +
           ` · 模型 ${info.ai_model || "未设置"} · 已回复 ${info.replies} 条` +
           ` · 今日 ${st.today || 0} 条 / 共 ${st.total || 0} 条 · ${st.chats || 0} 个会话` +
-          poll + err;
+          biz + poll + err;
       }
     }
     if (state.data && state.data.settings) {
