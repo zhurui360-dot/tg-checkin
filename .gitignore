@@ -9,3 +9,5 @@ backup/
 
 # 本地联调用的临时数据目录
 .tmppanel/
+.tmpprobe/
+.tools/
