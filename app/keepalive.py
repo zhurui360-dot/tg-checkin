@@ -16,6 +16,7 @@ import time
 import urllib.error
 import urllib.request
 from typing import Any
+from urllib.parse import urlsplit
 
 from . import db
 
@@ -62,7 +63,12 @@ def target_url() -> str:
     """优先用面板里填的地址，其次是自动学到的公网地址。"""
     configured = (db.get_setting("keepalive_url", "") or "").strip()
     if configured:
-        return configured if "://" in configured else f"https://{configured}"
+        base = configured if "://" in configured else f"https://{configured}"
+        base = base.rstrip("/")
+        # 只填了域名时补上 /health，避免为了自检去拉首页 HTML
+        if not urlsplit(base).path:
+            return f"{base}/health"
+        return base
     with _state_lock:
         base = _state["learned_base"]
     if base:
