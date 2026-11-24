@@ -12,6 +12,8 @@
     accounts: [],
     bots: [],
     botDetail: {},
+    agents: [],
+    editingAgentId: null,
     settingsFilled: false,
     backupFilled: false,
     modalHandler: null,
@@ -335,7 +337,7 @@
     const bots = state.bots;
     if (!tbody) return;
     if (!bots.length) {
-      tbody.innerHTML = `<tr><td colspan="7" class="empty">还没有机器人，用下面的表单从 @BotFather 拿个 token 加进来</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="8" class="empty">还没有机器人，用下面的表单从 @BotFather 拿个 token 加进来</td></tr>`;
       renderBotSummary();
       return;
     }
@@ -347,9 +349,17 @@
         : b.token_set === false || b.token_set === 0
           ? `<span class="badge err">无 Token</span>`
           : `<span class="badge">已停止</span>`;
+      const bound = b.ai_agent_id ? agentById(b.ai_agent_id) : null;
+      const agentCell = bound
+        ? esc(bound.name)
+        : (() => {
+            const def = defaultAgent();
+            return def ? `<span class="muted">${esc(def.name)}（默认）</span>` : `<span class="muted">未配置</span>`;
+          })();
       return `<tr>
         <td><strong>${esc(b.name || "-")}</strong>${b.default ? ` <span class="badge">默认</span>` : ""}</td>
         <td class="mono">${b.username ? "@" + esc(b.username) : "-"}</td>
+        <td>${agentCell}</td>
         <td>${esc(TRIGGER_TEXT[b.trigger] || b.trigger || "-")}</td>
         <td>${poll}</td>
         <td>${detail.replies != null ? detail.replies : (b.replies || 0)}</td>
@@ -414,6 +424,95 @@
     }
     if (form.elements.bot_enabled) {
       form.elements.bot_enabled.value = botInst ? (botInst.enabled ? "1" : "0") : "1";
+    }
+    fillAgentSelect();
+    if (form.elements.bot_agent_id) {
+      form.elements.bot_agent_id.value = botInst && botInst.ai_agent_id ? String(botInst.ai_agent_id) : "";
+    }
+  }
+
+  // ---------- AI 智能体 ----------
+
+  function agentById(id) {
+    return state.agents.find((a) => String(a.id) === String(id));
+  }
+
+  function defaultAgent() {
+    return state.agents.find((a) => a.is_default) || state.agents[0];
+  }
+
+  function renderAgents() {
+    const tbody = $("agentTableBody");
+    if (!tbody) return;
+    if (!state.agents.length) {
+      tbody.innerHTML = `<tr><td colspan="5" class="empty">还没有智能体，点右上角「新增智能体」建一个，配上模型和 Key 就能用</td></tr>`;
+    } else {
+      tbody.innerHTML = state.agents.map((a) => {
+        const isDefault = a.is_default;
+        const status = a.enabled
+          ? a.key_set ? `<span class="badge ok">可用</span>` : `<span class="badge err">缺 Key</span>`
+          : `<span class="badge">已关闭</span>`;
+        return `<tr>
+          <td><strong>${esc(a.name || "未命名")}</strong>${isDefault ? ` <span class="badge">默认</span>` : ""}</td>
+          <td class="mono">${esc(a.model || "-")}</td>
+          <td class="mono" title="${esc(a.base_url || "")}">${esc((a.base_url || "-").replace(/^https?:\/\//, ""))}</td>
+          <td>${status}</td>
+          <td><div class="row-actions">
+            <button class="btn small" data-action="test" data-id="${a.id}">测试</button>
+            <button class="btn small" data-action="edit" data-id="${a.id}">编辑</button>
+            ${isDefault ? "" : `<button class="btn small" data-action="default" data-id="${a.id}">设为默认</button>`}
+            <button class="btn small danger" data-action="delete" data-id="${a.id}">删除</button>
+          </div></td>
+        </tr>`;
+      }).join("");
+    }
+    fillAgentSelect();
+    renderBots();
+  }
+
+  function fillAgentSelect() {
+    const select = $("botAgentSelect");
+    if (!select) return;
+    const current = select.value;
+    const def = defaultAgent();
+    select.innerHTML = `<option value="">跟随默认${def ? `（${esc(def.name)}）` : ""}</option>` +
+      state.agents.map((a) => `<option value="${a.id}">${esc(a.name)}${a.model ? ` · ${esc(a.model)}` : ""}</option>`).join("");
+    if (current) select.value = current;
+  }
+
+  function applyAgentToForm(agent) {
+    const form = $("agentForm");
+    if (!form) return;
+    state.editingAgentId = agent ? agent.id : null;
+    form.elements.name.value = agent ? (agent.name || "") : "";
+    form.elements.model.value = agent ? (agent.model || "") : "";
+    form.elements.base_url.value = agent ? (agent.base_url || "") : "";
+    form.elements.system_prompt.value = agent ? (agent.system_prompt || "") : "";
+    form.elements.history_len.value = agent ? (agent.history_len ?? "") : "";
+    form.elements.max_tokens.value = agent ? (agent.max_tokens ?? "") : "";
+    form.elements.temperature.value = agent ? (agent.temperature ?? "") : "";
+    form.elements.min_interval.value = agent ? (agent.min_interval ?? "") : "";
+    form.elements.proxy.value = agent ? (agent.proxy || "") : "";
+    form.elements.enabled.value = agent ? (agent.enabled ? "1" : "0") : "1";
+    form.elements.api_key.value = "";
+    form.elements.api_key.placeholder = agent && agent.key_set
+      ? "已配置，留空表示不修改"
+      : "未配置，请填写 API Key";
+    $("agentFormTitle").textContent = agent ? `编辑智能体：${agent.name}` : "新增智能体";
+    $("agentFormHint").textContent = agent
+      ? "修改后点保存，正在用它的机器人下一条消息就生效"
+      : "取个名字，配上模型和 Key 就能用";
+    $("agentSaveBtn").textContent = agent ? "保存修改" : "创建智能体";
+    $("agentCancelBtn").classList.toggle("hidden", !agent);
+  }
+
+  async function refreshAgents() {
+    try {
+      const data = await api("/api/ai/agents");
+      state.agents = data.agents || [];
+      renderAgents();
+    } catch (err) {
+      if (!String(err.message).includes("登录")) toast(err.message, "err");
     }
   }
 
@@ -662,6 +761,7 @@
     state.data = data;
     state.accounts = data.accounts || [];
     state.bots = data.bots || [];
+    state.agents = data.ai_agents || [];
     if (!state.loginAccountId && state.accounts.length) {
       const first = state.accounts.find((a) => a.authorized) || state.accounts[0];
       state.loginAccountId = first.id;
@@ -676,6 +776,7 @@
     renderCatchup(data.catchup);
     renderAccounts();
     renderBots();
+    renderAgents();
     renderGroupSelects();
     loadKnownChats();
     refreshBots();
@@ -700,23 +801,8 @@
   }
 
   async function loadBotConfig() {
-    try {
-      const cfg = await api("/api/bot/config");
-      const form = $("aiForm");
-      if (!form) return;
-      ["ai_base_url", "ai_model", "ai_system_prompt", "ai_history_len",
-        "ai_max_tokens", "ai_temperature", "ai_min_interval", "ai_proxy"].forEach((key) => {
-        if (form.elements[key]) form.elements[key].value = cfg[key] ?? "";
-      });
-      if (form.elements.ai_api_key) {
-        form.elements.ai_api_key.value = "";
-        form.elements.ai_api_key.placeholder = cfg.ai_api_key_set
-          ? "已配置，留空表示不修改"
-          : "未配置，请填写 API Key";
-      }
-    } catch (err) {
-      toast(err.message, "err");
-    }
+    // 智能体列表从 bootstrap 已经拿到，进页签时再刷一次，保证多开面板时不显示旧数据
+    await refreshAgents();
   }
 
   async function loadBotMessages() {
@@ -1255,6 +1341,7 @@
             name: form.elements.name.value.trim(),
             trigger: form.elements.bot_trigger.value,
             enabled: form.elements.bot_enabled.value === "1",
+            ai_agent_id: form.elements.bot_agent_id ? (form.elements.bot_agent_id.value || "") : "",
           };
           if (token) body.token = token;
           await api(`/api/bots/${editing}`, { method: "PUT", body });
@@ -1265,6 +1352,7 @@
             token,
             trigger: form.elements.bot_trigger.value,
             enabled: form.elements.bot_enabled.value === "1",
+            ai_agent_id: form.elements.bot_agent_id ? (form.elements.bot_agent_id.value || "") : "",
           }});
           toast(`校验通过：${info.name}${info.username ? "（@" + info.username + "）" : ""}`, "ok");
         }
@@ -1331,34 +1419,98 @@
       } catch (err) { toast(err.message, "err"); }
     });
 
-    $("aiForm").addEventListener("submit", async (e) => {
+    $("agentForm").addEventListener("submit", async (e) => {
       e.preventDefault();
       const form = e.currentTarget;
       const payload = {};
-      ["ai_base_url", "ai_model", "ai_api_key", "ai_system_prompt", "ai_history_len",
-        "ai_max_tokens", "ai_temperature", "ai_min_interval", "ai_proxy"].forEach((key) => {
-        payload[key] = form.elements[key].value.trim();
+      ["name", "model", "base_url", "api_key", "system_prompt", "history_len",
+        "max_tokens", "temperature", "min_interval", "proxy"].forEach((key) => {
+        if (form.elements[key]) payload[key] = form.elements[key].value.trim();
       });
-      try {
-        await api("/api/settings", { method: "PUT", body: payload });
-        toast("AI 设置已保存", "ok");
-        await loadBootstrap();
-        await loadBotConfig();
-      } catch (err) { toast(err.message, "err"); }
-    });
-
-    $("aiTestBtn").addEventListener("click", async () => {
-      const btn = $("aiTestBtn");
+      if (form.elements.enabled) payload.enabled = form.elements.enabled.value === "1";
+      const btn = $("agentSaveBtn");
       btn.disabled = true;
-      btn.textContent = "测试中…";
       try {
-        const result = await api("/api/bot/test-ai", { method: "POST" });
-        toast(`AI 连通（${result.ms} ms）：${result.reply}`, "ok");
+        if (state.editingAgentId) {
+          await api(`/api/ai/agents/${state.editingAgentId}`, { method: "PUT", body: payload });
+          toast("智能体已保存", "ok");
+        } else {
+          await api("/api/ai/agents", { method: "POST", body: payload });
+          toast("智能体已创建", "ok");
+        }
+        applyAgentToForm(null);
+        await refreshAgents();
+        await loadBootstrap();
       } catch (err) {
         toast(err.message, "err");
       } finally {
         btn.disabled = false;
-        btn.textContent = "测试 AI 连通性";
+      }
+    });
+
+    $("agentNewBtn").addEventListener("click", () => {
+      applyAgentToForm(null);
+      const form = $("agentForm");
+      if (form) form.elements.name.focus();
+    });
+
+    $("agentCancelBtn").addEventListener("click", () => applyAgentToForm(null));
+
+    $("agentTestBtn").addEventListener("click", async () => {
+      const btn = $("agentTestBtn");
+      const agent = state.editingAgentId ? agentById(state.editingAgentId) : defaultAgent();
+      if (!agent) { toast("先保存一个智能体再测试", "err"); return; }
+      btn.disabled = true;
+      btn.textContent = "测试中…";
+      try {
+        const result = await api(`/api/ai/agents/${agent.id}/test`, { method: "POST" });
+        toast(`${agent.name} 连通（${result.ms} ms）：${result.reply}`, "ok");
+      } catch (err) {
+        toast(`${agent.name}：${err.message}`, "err");
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "测试这个智能体";
+      }
+    });
+
+    $("agentTableBody").addEventListener("click", async (e) => {
+      const btn = e.target.closest("button[data-action]");
+      if (!btn) return;
+      const id = Number(btn.dataset.id);
+      const agent = agentById(id);
+      if (!agent) return;
+      const action = btn.dataset.action;
+      if (action === "edit") {
+        applyAgentToForm(agent);
+        return;
+      }
+      if (action === "test") {
+        btn.disabled = true;
+        try {
+          const result = await api(`/api/ai/agents/${id}/test`, { method: "POST" });
+          toast(`${agent.name} 连通（${result.ms} ms）：${result.reply}`, "ok");
+        } catch (err) { toast(`${agent.name}：${err.message}`, "err"); }
+        finally { btn.disabled = false; }
+        return;
+      }
+      if (action === "default") {
+        try {
+          await api(`/api/ai/agents/${id}/default`, { method: "POST" });
+          toast(`已把「${agent.name}」设为默认智能体`, "ok");
+          await refreshAgents();
+          await loadBootstrap();
+        } catch (err) { toast(err.message, "err"); }
+        return;
+      }
+      if (action === "delete") {
+        if (!window.confirm(`删除智能体「${agent.name}」？正在用它的机器人会退回跟随默认。`)) return;
+        try {
+          await api(`/api/ai/agents/${id}`, { method: "DELETE" });
+          if (String(state.editingAgentId) === String(id)) applyAgentToForm(null);
+          toast("已删除", "ok");
+          await refreshAgents();
+          await loadBootstrap();
+        } catch (err) { toast(err.message, "err"); }
       }
     });
 

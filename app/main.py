@@ -204,9 +204,28 @@ def bootstrap(_: None = Depends(require_auth)) -> dict[str, Any]:
                 "enabled": item.get("enabled"),
                 "token_set": item.get("token_set"),
                 "trigger": item.get("trigger"),
+                "ai_agent_id": item.get("ai_agent_id"),
             }
             for item in bots
         ],
+        "ai_agents": [
+            {
+                "id": item.get("id"),
+                "name": item.get("name"),
+                "base_url": item.get("base_url"),
+                "model": item.get("model"),
+                "temperature": item.get("temperature"),
+                "max_tokens": item.get("max_tokens"),
+                "history_len": item.get("history_len"),
+                "min_interval": item.get("min_interval"),
+                "proxy": item.get("proxy"),
+                "enabled": item.get("enabled"),
+                "key_set": item.get("key_set"),
+                "is_default": str(item.get("id")) == str(settings.get("ai_agent_id", "")),
+            }
+            for item in db.list_agents()
+        ],
+        "ai_agent_id": settings.get("ai_agent_id", ""),
         "catchup": scheduler.catchup_status(),
         "backup": backup.status(),
         "keepalive": keepalive.status(),
@@ -354,7 +373,7 @@ SETTING_KEYS = {
     "panel_password", "keepalive_enabled", "keepalive_interval", "keepalive_url",
     "checkin_mode", "catchup_enabled", "catchup_interval", "catchup_cooldown",
     # AI 机器人
-    "bot_enabled", "bot_token", "bot_trigger",
+    "bot_enabled", "bot_token", "bot_trigger", "ai_agent_id",
     "ai_base_url", "ai_api_key", "ai_model", "ai_system_prompt",
     "ai_history_len", "ai_max_tokens", "ai_temperature", "ai_min_interval",
     "ai_proxy",
@@ -423,6 +442,9 @@ def update_settings(body: dict[str, Any], _: None = Depends(require_auth)) -> di
             raise HTTPException(status_code=400, detail="bot_trigger 只能是 mention / all / private")
         if key == "checkin_mode" and value not in ("bot", "user"):
             raise HTTPException(status_code=400, detail="checkin_mode 只能是 bot / user")
+        if key == "ai_agent_id" and value:
+            if not value.isdigit() or not db.get_agent(int(value)):
+                raise HTTPException(status_code=400, detail="指定的 AI 智能体不存在")
         if key in TOGGLE_KEYS and value not in ("0", "1"):
             raise HTTPException(status_code=400, detail=f"{key} 只能是 0 或 1")
         if key == "backup_interval" and value:
@@ -531,9 +553,126 @@ def bot_verify(body: dict[str, Any], _: None = Depends(require_auth)) -> dict[st
 
 
 @app.post("/api/bot/test-ai")
-def bot_test_ai(_: None = Depends(require_auth)) -> dict[str, Any]:
+def bot_test_ai(body: dict[str, Any] | None = None, _: None = Depends(require_auth)) -> dict[str, Any]:
+    """测 AI 连通性。传 agent_id 就测那个智能体，不传按当前默认的测。"""
+    agent = None
+    raw = str((body or {}).get("agent_id", "") or "").strip()
+    if raw:
+        if not raw.isdigit() or not db.get_agent(int(raw)):
+            raise HTTPException(status_code=400, detail="指定的 AI 智能体不存在")
+        agent = db.get_agent(int(raw))
+    else:
+        agent = db.agent_for_bot(None)
     try:
-        return bot.test_ai()
+        result = bot.test_ai(agent=agent)
+    except bot.BotError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    result["agent"] = (agent or {}).get("name", "")
+    return result
+
+
+# ---------------- AI 智能体 ----------------
+
+def _agent_payload(body: dict[str, Any], current: dict[str, Any] | None = None) -> dict[str, Any]:
+    name = str(body.get("name", "")).strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="给智能体起个名字，方便区分")
+    base_url = str(body.get("base_url", "")).strip().rstrip("/")
+    if not base_url:
+        raise HTTPException(status_code=400, detail="请填写接口地址（例如 https://api.deepseek.com/v1）")
+    if not base_url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="接口地址要以 http:// 或 https:// 开头")
+    model = str(body.get("model", "")).strip()
+    if not model:
+        raise HTTPException(status_code=400, detail="请填写模型名（例如 deepseek-chat）")
+    # Key 留空表示不修改，避免面板回填掩码后把真实 Key 覆盖掉
+    api_key = str(body.get("api_key", "")).strip()
+    if not api_key and current:
+        api_key = str(current.get("api_key") or "")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="请填写 API Key")
+
+    def number(key: str, default: float, low: float, high: float) -> float:
+        raw = body.get(key, default)
+        try:
+            return max(low, min(float(raw), high))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"{key} 必须是数字")
+
+    enabled = body.get("enabled", True)
+    if isinstance(enabled, str):
+        enabled = enabled.lower() in ("1", "true", "on", "yes")
+    return {
+        "name": name,
+        "base_url": base_url,
+        "api_key": api_key,
+        "model": model,
+        "system_prompt": str(body.get("system_prompt", "")).strip(),
+        "temperature": f"{number('temperature', 0.7, 0.0, 2.0):g}",
+        "max_tokens": int(number("max_tokens", 800, 64, 4096)),
+        "history_len": int(number("history_len", 12, 0, 40)),
+        "min_interval": int(number("min_interval", 3, 0, 60)),
+        "proxy": str(body.get("proxy", "")).strip(),
+        "enabled": bool(enabled),
+    }
+
+
+@app.get("/api/ai/agents")
+def list_ai_agents(_: None = Depends(require_auth)) -> dict[str, Any]:
+    default_id = db.default_agent_id()
+    agents = []
+    for item in db.list_agents():
+        data = dict(item)
+        data.pop("api_key", None)
+        data["is_default"] = item["id"] == default_id
+        agents.append(data)
+    return {"agents": agents, "default_id": default_id}
+
+
+@app.post("/api/ai/agents")
+def create_ai_agent(body: dict[str, Any], _: None = Depends(require_auth)) -> dict[str, Any]:
+    agent_id = db.add_agent(_agent_payload(body))
+    # 第一个智能体自动成为默认，省得再点一次
+    if not db.get_setting("ai_agent_id", "").strip():
+        db.set_setting("ai_agent_id", str(agent_id))
+    return {"ok": True, "id": agent_id}
+
+
+@app.put("/api/ai/agents/{agent_id}")
+def edit_ai_agent(agent_id: int, body: dict[str, Any], _: None = Depends(require_auth)) -> dict[str, Any]:
+    current = db.get_agent(agent_id)
+    if not current:
+        raise HTTPException(status_code=404, detail="智能体不存在")
+    db.update_agent(agent_id, _agent_payload(body, current))
+    return {"ok": True}
+
+
+@app.delete("/api/ai/agents/{agent_id}")
+def remove_ai_agent(agent_id: int, _: None = Depends(require_auth)) -> dict[str, Any]:
+    if not db.delete_agent(agent_id):
+        raise HTTPException(status_code=404, detail="智能体不存在")
+    if db.get_setting("ai_agent_id", "") == str(agent_id):
+        # 删的是默认智能体，就把默认让给剩下的第一个
+        remain = db.default_agent_id()
+        db.set_setting("ai_agent_id", str(remain or ""))
+    return {"ok": True, "default_id": db.default_agent_id()}
+
+
+@app.post("/api/ai/agents/{agent_id}/default")
+def set_default_ai_agent(agent_id: int, _: None = Depends(require_auth)) -> dict[str, Any]:
+    if not db.get_agent(agent_id):
+        raise HTTPException(status_code=404, detail="智能体不存在")
+    db.set_setting("ai_agent_id", str(agent_id))
+    return {"ok": True, "default_id": agent_id}
+
+
+@app.post("/api/ai/agents/{agent_id}/test")
+def test_ai_agent(agent_id: int, _: None = Depends(require_auth)) -> dict[str, Any]:
+    agent = db.get_agent(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="智能体不存在")
+    try:
+        return bot.test_ai(agent=agent)
     except bot.BotError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -692,6 +831,20 @@ def list_bots(_: None = Depends(require_auth)) -> dict[str, Any]:
     }
 
 
+def _bot_agent_id(body: dict[str, Any]) -> int | None:
+    """机器人绑定哪个智能体；0 / 空表示跟随全局默认。"""
+    raw = body.get("ai_agent_id")
+    if raw in ("", None, 0, "0"):
+        return None
+    try:
+        agent_id = int(raw)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="ai_agent_id 必须是数字")
+    if not db.get_agent(agent_id):
+        raise HTTPException(status_code=400, detail="指定的 AI 智能体不存在")
+    return agent_id
+
+
 @app.post("/api/bots")
 def create_bot(body: dict[str, Any], _: None = Depends(require_auth)) -> dict[str, Any]:
     token = str(body.get("token", "")).strip()
@@ -708,6 +861,7 @@ def create_bot(body: dict[str, Any], _: None = Depends(require_auth)) -> dict[st
             "username": info.get("username", ""),
             "enabled": bool(body.get("enabled", True)),
             "trigger": str(body.get("trigger", "mention") or "mention"),
+            "ai_agent_id": _bot_agent_id(body),
         }
     )
     bot.start(bot_id)
@@ -729,6 +883,8 @@ def edit_bot(bot_id: int, body: dict[str, Any], _: None = Depends(require_auth))
         fields["trigger"] = trigger
     if "enabled" in body:
         fields["enabled"] = bool(body["enabled"])
+    if "ai_agent_id" in body:
+        fields["ai_agent_id"] = _bot_agent_id(body)
     token = str(body.get("token", "")).strip()
     if token:
         try:

@@ -31,7 +31,7 @@ from . import __version__, db
 log = logging.getLogger("tg-checkin.backup")
 
 BACKUP_DIR = db.DATA_DIR / "backups"
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 NAME_RE = re.compile(r"^tgck-\d{8}-\d{6}\.json$")
 
 
@@ -63,6 +63,7 @@ def build_bundle(include_logs: bool = True) -> dict[str, Any]:
         "groups": db.list_groups(),
         "accounts": db.list_accounts(),
         "bots": db.list_bots(),
+        "ai_agents": db.list_agents(),
         "logs": db.list_logs(limit=1000) if include_logs else [],
     }
 
@@ -97,7 +98,7 @@ def restore_bundle(
         db.set_setting(key, value)
         restored_settings += 1
 
-    # 2) 账号 / 机器人：先恢复，拿到新 ID 的映射关系
+    # 2) 账号 / 智能体 / 机器人：先恢复，拿到新 ID 的映射关系
     if mode == "replace":
         for item in db.list_groups():
             db.delete_group(int(item["id"]))
@@ -105,11 +106,21 @@ def restore_bundle(
             db.delete_account(int(item["id"]))
         for item in db.list_bots():
             db.delete_bot(int(item["id"]))
+        for item in db.list_agents():
+            db.delete_agent(int(item["id"]))
 
     account_map = _restore_accounts(bundle.get("accounts") or [], mode)
-    bot_map = _restore_bots(bundle.get("bots") or [], mode)
+    agent_map = _restore_agents(bundle.get("ai_agents") or [], mode)
+    bot_map = _restore_bots(bundle.get("bots") or [], mode, agent_map)
     groups = _restore_groups(bundle.get("groups") or [], mode, account_map, bot_map)
     logs = _restore_logs(bundle.get("logs") or [], mode)
+
+    # 默认智能体存的是旧 ID，得换成恢复后的新 ID，否则指向一个不存在的记录
+    if isinstance(settings.get("ai_agent_id"), (str, int)):
+        raw_agent = str(settings.get("ai_agent_id") or "").strip()
+        if raw_agent.isdigit():
+            mapped = agent_map.get(int(raw_agent))
+            db.set_setting("ai_agent_id", str(mapped) if mapped else "")
 
     return {
         "ok": True,
@@ -117,9 +128,45 @@ def restore_bundle(
         "settings": restored_settings,
         "accounts": len(account_map),
         "bots": len(bot_map),
+        "ai_agents": len(agent_map),
         "groups": groups,
         "logs": logs,
     }
+
+
+def _restore_agents(items: list[Any], mode: str) -> dict[int, int]:
+    mapping: dict[int, int] = {}
+    existing = {
+        f"{a.get('name') or ''}|{a.get('model') or ''}|{a.get('base_url') or ''}": int(a["id"])
+        for a in db.list_agents()
+    }
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        old_id = item.get("id")
+        payload = {
+            "name": str(item.get("name") or ""),
+            "base_url": str(item.get("base_url") or ""),
+            "api_key": str(item.get("api_key") or ""),
+            "model": str(item.get("model") or ""),
+            "system_prompt": str(item.get("system_prompt") or ""),
+            "temperature": str(item.get("temperature") or "0.7"),
+            "max_tokens": int(item.get("max_tokens") or 800),
+            "history_len": int(item.get("history_len") or 12),
+            "min_interval": int(item.get("min_interval") or 3),
+            "proxy": str(item.get("proxy") or ""),
+            "enabled": bool(item.get("enabled", True)),
+        }
+        key = f"{payload['name']}|{payload['model']}|{payload['base_url']}"
+        if mode == "merge" and key in existing:
+            if old_id is not None:
+                mapping[int(old_id)] = existing[key]
+            continue
+        new_id = db.add_agent(payload)
+        existing[key] = new_id
+        if old_id is not None:
+            mapping[int(old_id)] = new_id
+    return mapping
 
 
 def _restore_accounts(items: list[Any], mode: str) -> dict[int, int]:
@@ -153,13 +200,22 @@ def _restore_accounts(items: list[Any], mode: str) -> dict[int, int]:
     return mapping
 
 
-def _restore_bots(items: list[Any], mode: str) -> dict[int, int]:
+def _restore_bots(
+    items: list[Any], mode: str, agent_map: dict[int, int] | None = None
+) -> dict[int, int]:
     mapping: dict[int, int] = {}
     existing = {str(b.get("token") or ""): int(b["id"]) for b in db.list_bots()}
     for item in items:
         if not isinstance(item, dict):
             continue
         old_id = item.get("id")
+        raw_agent = item.get("ai_agent_id")
+        bound_agent = None
+        if raw_agent not in (None, "", 0, "0"):
+            try:
+                bound_agent = (agent_map or {}).get(int(raw_agent))
+            except (TypeError, ValueError):
+                bound_agent = None
         payload = {
             "name": str(item.get("name") or ""),
             "token": str(item.get("token") or ""),
@@ -168,6 +224,7 @@ def _restore_bots(items: list[Any], mode: str) -> dict[int, int]:
             "trigger": str(item.get("trigger") or "mention"),
             "business_connections": str(item.get("business_connections") or ""),
             "known_chats": str(item.get("known_chats") or ""),
+            "ai_agent_id": bound_agent,
         }
         key = payload["token"]
         if mode == "merge" and key in existing:

@@ -211,10 +211,32 @@ def verify_token(token: str | None = None, bot_id: int | None = None) -> dict[st
 
 # ---------------- AI 调用 ----------------
 
+def _agent_cfg(agent: dict[str, Any] | None) -> dict[str, str]:
+    """把智能体记录摊平成和老配置同名的字段，没绑智能体时就用老配置。"""
+    cfg = dict(_cfg())
+    if not agent:
+        return cfg
+    mapping = {
+        "ai_base_url": agent.get("base_url"),
+        "ai_api_key": agent.get("api_key"),
+        "ai_model": agent.get("model"),
+        "ai_system_prompt": agent.get("system_prompt"),
+        "ai_temperature": agent.get("temperature"),
+        "ai_max_tokens": agent.get("max_tokens"),
+        "ai_history_len": agent.get("history_len"),
+        "ai_min_interval": agent.get("min_interval"),
+        "ai_proxy": agent.get("proxy"),
+    }
+    for key, value in mapping.items():
+        if value not in (None, ""):
+            cfg[key] = str(value)
+    return cfg
+
+
 def _ai_messages(
     chat_id: str, user_text: str, author: str, is_private: bool, bot_id: int | None = None
 ) -> list[dict[str, str]]:
-    cfg = _cfg()
+    cfg = _agent_cfg(db.agent_for_bot(bot_id))
     system = (cfg.get("ai_system_prompt") or "").strip()
     messages: list[dict[str, str]] = []
     if system:
@@ -238,9 +260,9 @@ def _ai_messages(
     return messages
 
 
-def call_ai(messages: list[dict[str, str]]) -> str:
-    """调用兼容 OpenAI 接口的 chat/completions。"""
-    cfg = _cfg()
+def call_ai(messages: list[dict[str, str]], agent: dict[str, Any] | None = None) -> str:
+    """调用兼容 OpenAI 接口的 chat/completions。agent 为空时用全局老配置。"""
+    cfg = _agent_cfg(agent)
     base = (cfg.get("ai_base_url") or "").strip().rstrip("/")
     key = (cfg.get("ai_api_key") or "").strip()
     model = (cfg.get("ai_model") or "").strip()
@@ -329,10 +351,10 @@ def call_ai(messages: list[dict[str, str]]) -> str:
     return str(text or "").strip()
 
 
-def test_ai() -> dict[str, Any]:
+def test_ai(agent: dict[str, Any] | None = None) -> dict[str, Any]:
     """用一句最短的话验证 AI 配置是否可用。"""
     started = time.time()
-    text = call_ai([{"role": "user", "content": "只回复两个字：可用"}])
+    text = call_ai([{"role": "user", "content": "只回复两个字：可用"}], agent=agent)
     return {"ok": True, "reply": text[:200], "ms": int((time.time() - started) * 1000)}
 
 
@@ -516,7 +538,8 @@ def _reply(
 
 
 def _handle_message(message: dict[str, Any], bot_id: int | None = None) -> None:
-    cfg = _cfg()
+    agent = db.agent_for_bot(bot_id)
+    cfg = _agent_cfg(agent)
     record = _record(bot_id) or {}
     bot_username = str(record.get("username") or "").strip()
     chat = message.get("chat") or {}
@@ -559,7 +582,7 @@ def _handle_message(message: dict[str, Any], bot_id: int | None = None) -> None:
 
     try:
         messages = _ai_messages(storage_id, text, author, is_private, bot_id)
-        answer = call_ai(messages) or "（模型没有返回内容）"
+        answer = call_ai(messages, agent=agent) or "（模型没有返回内容）"
     except BotError as exc:
         log.warning("AI 调用失败：%s", exc)
         # 同步到面板状态，否则用户只能翻容器日志才知道为什么没回复
@@ -733,8 +756,9 @@ def restart(bot_id: int | None = None) -> None:
 def _status_one(bot_id: int | None = None) -> dict[str, Any]:
     rt = _runtime(bot_id)
     snapshot = dict(rt["state"])
-    cfg = _cfg()
     record = _record(bot_id) or {}
+    agent = db.agent_for_bot(record.get("id") or bot_id)
+    cfg = _agent_cfg(agent)
     token = str(record.get("token") or "").strip()
     thread = rt.get("thread")
     return {
@@ -754,6 +778,8 @@ def _status_one(bot_id: int | None = None) -> dict[str, Any]:
         "started_at": snapshot.get("started_at", ""),
         "chats": known_chats(bot_id),
         "stats": db.ai_stats(bot_id if bot_id else None),
+        "ai_agent_id": record.get("ai_agent_id"),
+        "ai_agent_name": (agent or {}).get("name", ""),
         "ai_base_url": cfg.get("ai_base_url", ""),
         "ai_model": cfg.get("ai_model", ""),
         "ai_key_set": bool((cfg.get("ai_api_key") or "").strip()),

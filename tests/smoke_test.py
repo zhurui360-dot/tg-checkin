@@ -113,6 +113,71 @@ with TestClient(app) as client:
     assert client.put("/api/settings", json={"ai_proxy": ""}).status_code == 200
     assert client.get("/api/bot/config").json()["ai_proxy"] == ""
 
+    # ---------- AI 智能体：多模型并存 + 各自命名 ----------
+    agents = client.get("/api/ai/agents").json()["agents"]
+    # 老的单份 AI 配置会被自动迁移成第一个智能体
+    assert agents and agents[0]["name"] and agents[0]["is_default"], agents
+    assert all("api_key" not in a for a in agents), "列表不能返回 API Key"
+
+    made = client.post("/api/ai/agents", json={
+        "name": "闲聊小助手",
+        "base_url": "https://api.moonshot.cn/v1",
+        "api_key": "sk-second",
+        "model": "moonshot-v1-8k",
+        "system_prompt": "用轻松的语气聊天",
+        "temperature": "0.9",
+        "max_tokens": "600",
+        "history_len": "20",
+        "min_interval": "5",
+    })
+    assert made.status_code == 200, made.text
+    second_id = made.json()["id"]
+
+    listed = client.get("/api/ai/agents").json()
+    assert len(listed["agents"]) == 2
+    second = [a for a in listed["agents"] if a["id"] == second_id][0]
+    assert second["name"] == "闲聊小助手" and second["model"] == "moonshot-v1-8k"
+    assert second["max_tokens"] == 600 and second["history_len"] == 20
+
+    # 必填与格式校验：名字、地址协议、模型名、Key 都不能糊弄
+    assert client.post("/api/ai/agents", json={"base_url": "https://a/v1", "model": "m", "api_key": "k"}).status_code == 400
+    assert client.post("/api/ai/agents", json={"name": "x", "base_url": "ftp://a", "model": "m", "api_key": "k"}).status_code == 400
+    assert client.post("/api/ai/agents", json={"name": "x", "base_url": "https://a/v1", "api_key": "k"}).status_code == 400
+    assert client.post("/api/ai/agents", json={"name": "x", "base_url": "https://a/v1", "model": "m"}).status_code == 400
+
+    # 改名字、改模型；Key 留空表示不修改
+    assert client.put(f"/api/ai/agents/{second_id}", json={
+        "name": "客服小助手",
+        "base_url": "https://api.moonshot.cn/v1",
+        "model": "moonshot-v1-32k",
+        "api_key": "",
+        "temperature": "0.3",
+    }).status_code == 200
+    renamed = [a for a in client.get("/api/ai/agents").json()["agents"] if a["id"] == second_id][0]
+    assert renamed["name"] == "客服小助手" and renamed["model"] == "moonshot-v1-32k"
+    assert renamed["key_set"] is True, "留空的 Key 不能被清掉"
+
+    # 数值越界自动夹到合法区间
+    client.put(f"/api/ai/agents/{second_id}", json={
+        "name": "客服小助手", "base_url": "https://api.moonshot.cn/v1",
+        "model": "moonshot-v1-32k", "temperature": "5", "max_tokens": "99999",
+    })
+    clamped = [a for a in client.get("/api/ai/agents").json()["agents"] if a["id"] == second_id][0]
+    assert float(clamped["temperature"]) <= 2.0 and int(clamped["max_tokens"]) <= 4096
+
+    # 切换默认智能体，bootstrap 要跟着变
+    assert client.post(f"/api/ai/agents/{second_id}/default").status_code == 200
+    assert str(client.get("/api/bootstrap").json()["ai_agent_id"]) == str(second_id)
+    assert client.post("/api/ai/agents/99999/default").status_code == 404
+
+    # 机器人可以单独指定智能体，传不存在的 ID 要拒绝
+    assert client.put("/api/settings", json={"ai_agent_id": "99999"}).status_code == 400
+
+    # 删除默认智能体后，默认要让给剩下的，不能留个悬空 ID
+    assert client.delete(f"/api/ai/agents/{second_id}").status_code == 200
+    remain = client.get("/api/ai/agents").json()
+    assert len(remain["agents"]) == 1 and remain["agents"][0]["is_default"]
+
     # 无 token 时校验应给出明确 400，而不是 500
     bad_verify = client.post("/api/bot/verify", json={"token": ""})
     assert bad_verify.status_code == 400, bad_verify.text
@@ -382,6 +447,12 @@ with TestClient(app) as client:
     accounts_now = client.get("/api/accounts").json()["accounts"]
     assert backup_group["account_id"] in [a["id"] for a in accounts_now], backup_group
 
+    # 智能体也要跟着回来，且默认值指向的必须是存在的记录
+    assert "ai_agents" in bundle and bundle["ai_agents"], bundle.keys()
+    agents_now = client.get("/api/ai/agents").json()
+    assert agents_now["agents"], "恢复后智能体不能丢"
+    assert agents_now["default_id"] in [a["id"] for a in agents_now["agents"]], agents_now
+
     # 合并模式不能产生重复群组
     again = client.post("/api/backup/restore", json={"data": bundle, "mode": "merge"}).json()
     assert again["groups"] == 0, again
@@ -432,4 +503,4 @@ with TestClient(app) as client:
     webdav_masked = client.get("/api/bootstrap").json()["settings"]["webdav_password"]
     assert "secret123" not in webdav_masked, webdav_masked
 
-print("冒烟测试通过：健康检查、鉴权、群组 CRUD、cron 校验、设置保存、保活自检、AI 机器人、机器人签到、扫码登录、多账号、多机器人、补签、备份恢复均正常")
+print("冒烟测试通过：健康检查、鉴权、群组 CRUD、cron 校验、设置保存、保活自检、AI 机器人、多智能体、机器人签到、扫码登录、多账号、多机器人、补签、备份恢复均正常")

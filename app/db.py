@@ -48,6 +48,8 @@ DEFAULTS: dict[str, str] = {
     "ai_base_url": os.getenv("AI_BASE_URL", "").strip() or "https://api.deepseek.com/v1",
     "ai_api_key": os.getenv("AI_API_KEY", "").strip(),
     "ai_model": os.getenv("AI_MODEL", "").strip() or "deepseek-chat",
+    # 当前使用的智能体（ai_agents 表的主键）。空表示还没选，回退到下面这组老字段
+    "ai_agent_id": "",
     "ai_system_prompt": "你是一个在 Telegram 群里聊天的助手，回答简洁、口语化，用中文回复。不确定的事不要编造。",
     "ai_history_len": "12",
     "ai_max_tokens": "800",
@@ -140,7 +142,23 @@ def init_db() -> None:
                 update_offset        TEXT NOT NULL DEFAULT '0',
                 business_connections TEXT NOT NULL DEFAULT '',
                 known_chats          TEXT NOT NULL DEFAULT '',
+                ai_agent_id          INTEGER,
                 created_at           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS ai_agents (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                name          TEXT NOT NULL DEFAULT '',
+                base_url      TEXT NOT NULL DEFAULT '',
+                api_key       TEXT NOT NULL DEFAULT '',
+                model         TEXT NOT NULL DEFAULT '',
+                system_prompt TEXT NOT NULL DEFAULT '',
+                temperature   TEXT NOT NULL DEFAULT '0.7',
+                max_tokens    INTEGER NOT NULL DEFAULT 800,
+                history_len   INTEGER NOT NULL DEFAULT 12,
+                min_interval  INTEGER NOT NULL DEFAULT 3,
+                proxy         TEXT NOT NULL DEFAULT '',
+                enabled       INTEGER NOT NULL DEFAULT 1,
+                created_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             CREATE TABLE IF NOT EXISTS logs (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -173,6 +191,7 @@ def init_db() -> None:
         _bootstrap_from_env(conn)
         _migrate_columns(conn)
         _seed_identities(conn)
+        _seed_agents(conn)
 
 
 def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
@@ -196,6 +215,9 @@ def _migrate_columns(conn: sqlite3.Connection) -> None:
         first = conn.execute("SELECT MIN(id) AS n FROM bots").fetchone()["n"]
         if first:
             conn.execute("UPDATE ai_messages SET bot_id=? WHERE bot_id=0", (int(first),))
+
+    if "ai_agent_id" not in _columns(conn, "bots"):
+        conn.execute("ALTER TABLE bots ADD COLUMN ai_agent_id INTEGER")
 
 
 def _seed_identities(conn: sqlite3.Connection) -> None:
@@ -245,6 +267,48 @@ def _seed_identities(conn: sqlite3.Connection) -> None:
                     data.get("business_connections", ""),
                 ),
             )
+
+
+def _seed_agents(conn: sqlite3.Connection) -> None:
+    """把老的单份 AI 配置提升成第一个智能体。
+
+    升级后不会丢配置：接口地址、Key、模型、提示词全部搬进来，
+    并把 settings.ai_agent_id 指向它，机器人默认就用它说话。
+    """
+    if conn.execute("SELECT COUNT(*) AS n FROM ai_agents").fetchone()["n"]:
+        return
+    rows = conn.execute(
+        "SELECT key, value FROM settings WHERE key IN "
+        "('ai_base_url','ai_api_key','ai_model','ai_system_prompt','ai_temperature',"
+        "'ai_max_tokens','ai_history_len','ai_min_interval','ai_proxy')"
+    ).fetchall()
+    data = {row["key"]: str(row["value"]) for row in rows}
+    # 完全没配过就别造一个空壳出来，等用户自己新建
+    if not (data.get("ai_api_key") or "").strip() and not (data.get("ai_model") or "").strip():
+        return
+    cur = conn.execute(
+        "INSERT INTO ai_agents(name, base_url, api_key, model, system_prompt, "
+        "temperature, max_tokens, history_len, min_interval, proxy, enabled) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,1)",
+        (
+            "默认智能体",
+            data.get("ai_base_url", ""),
+            data.get("ai_api_key", ""),
+            data.get("ai_model", ""),
+            data.get("ai_system_prompt", ""),
+            data.get("ai_temperature", "0.7") or "0.7",
+            int(float(data.get("ai_max_tokens", "800") or 800)),
+            int(float(data.get("ai_history_len", "12") or 12)),
+            int(float(data.get("ai_min_interval", "3") or 3)),
+            data.get("ai_proxy", ""),
+        ),
+    )
+    agent_id = int(cur.lastrowid)
+    conn.execute(
+        "INSERT INTO settings(key, value) VALUES('ai_agent_id', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (str(agent_id),),
+    )
 
 
 def _bootstrap_from_env(conn: sqlite3.Connection) -> None:
@@ -654,11 +718,122 @@ def delete_account(account_id: int) -> bool:
         return cur.rowcount > 0
 
 
+# ---------------- AI 智能体 ----------------
+
+AGENT_FIELDS = (
+    "name", "base_url", "api_key", "model", "system_prompt",
+    "temperature", "max_tokens", "history_len", "min_interval", "proxy", "enabled",
+)
+
+
+def _agent_row(row: sqlite3.Row) -> dict[str, Any]:
+    data = dict(row)
+    data["enabled"] = bool(data.get("enabled"))
+    data["key_set"] = bool(str(data.get("api_key") or "").strip())
+    return data
+
+
+def list_agents() -> list[dict[str, Any]]:
+    with connection() as conn:
+        rows = conn.execute("SELECT * FROM ai_agents ORDER BY id").fetchall()
+    return [_agent_row(row) for row in rows]
+
+
+def get_agent(agent_id: int) -> dict[str, Any] | None:
+    with connection() as conn:
+        row = conn.execute("SELECT * FROM ai_agents WHERE id=?", (agent_id,)).fetchone()
+    return None if row is None else _agent_row(row)
+
+
+def add_agent(data: dict[str, Any]) -> int:
+    with connection() as conn:
+        cur = conn.execute(
+            "INSERT INTO ai_agents(name, base_url, api_key, model, system_prompt, "
+            "temperature, max_tokens, history_len, min_interval, proxy, enabled) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                data.get("name") or "未命名智能体",
+                data.get("base_url", ""),
+                data.get("api_key", ""),
+                data.get("model", ""),
+                data.get("system_prompt", ""),
+                str(data.get("temperature", "0.7")),
+                int(data.get("max_tokens", 800)),
+                int(data.get("history_len", 12)),
+                int(data.get("min_interval", 3)),
+                data.get("proxy", ""),
+                1 if data.get("enabled", True) else 0,
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def update_agent(agent_id: int, data: dict[str, Any]) -> bool:
+    current = get_agent(agent_id)
+    if current is None:
+        return False
+    merged = {**current, **{k: v for k, v in data.items() if k in AGENT_FIELDS}}
+    with connection() as conn:
+        cur = conn.execute(
+            "UPDATE ai_agents SET name=?, base_url=?, api_key=?, model=?, system_prompt=?, "
+            "temperature=?, max_tokens=?, history_len=?, min_interval=?, proxy=?, enabled=? "
+            "WHERE id=?",
+            (
+                merged.get("name") or "未命名智能体",
+                merged.get("base_url", ""),
+                merged.get("api_key", ""),
+                merged.get("model", ""),
+                merged.get("system_prompt", ""),
+                str(merged.get("temperature", "0.7")),
+                int(merged.get("max_tokens", 800)),
+                int(merged.get("history_len", 12)),
+                int(merged.get("min_interval", 3)),
+                merged.get("proxy", ""),
+                1 if merged.get("enabled", True) else 0,
+                agent_id,
+            ),
+        )
+        return cur.rowcount > 0
+
+
+def delete_agent(agent_id: int) -> bool:
+    with connection() as conn:
+        cur = conn.execute("DELETE FROM ai_agents WHERE id=?", (agent_id,))
+        # 引用了它的机器人退回「跟随默认」，避免留下悬空 ID
+        conn.execute("UPDATE bots SET ai_agent_id=NULL WHERE ai_agent_id=?", (agent_id,))
+        return cur.rowcount > 0
+
+
+def default_agent_id() -> int | None:
+    raw = get_setting("ai_agent_id", "").strip()
+    if raw.isdigit() and get_agent(int(raw)):
+        return int(raw)
+    enabled = [a for a in list_agents() if a["enabled"]]
+    if enabled:
+        return int(enabled[0]["id"])
+    return None
+
+
+def agent_for_bot(bot_id: int | None) -> dict[str, Any] | None:
+    """解析某个机器人实际该用哪个智能体。
+
+    优先级：机器人自己指定的 → 全局默认 → 第一个启用的 → 空（回退老配置）。
+    """
+    if bot_id:
+        record = get_bot(int(bot_id))
+        if record and record.get("ai_agent_id"):
+            agent = get_agent(int(record["ai_agent_id"]))
+            if agent:
+                return agent
+    agent_id = default_agent_id()
+    return get_agent(agent_id) if agent_id else None
+
+
 # ---------------- 机器人列表 ----------------
 
 BOT_FIELDS = (
     "name", "token", "username", "enabled", "trigger",
-    "update_offset", "business_connections", "known_chats",
+    "update_offset", "business_connections", "known_chats", "ai_agent_id",
 )
 
 
@@ -694,13 +869,15 @@ def default_bot() -> dict[str, Any] | None:
 def add_bot(data: dict[str, Any]) -> int:
     with connection() as conn:
         cur = conn.execute(
-            "INSERT INTO bots(name, token, username, enabled, trigger) VALUES(?,?,?,?,?)",
+            "INSERT INTO bots(name, token, username, enabled, trigger, ai_agent_id) "
+            "VALUES(?,?,?,?,?,?)",
             (
                 data.get("name") or data.get("username") or "机器人",
                 data.get("token", ""),
                 data.get("username", ""),
                 1 if data.get("enabled", True) else 0,
                 data.get("trigger") or "mention",
+                data.get("ai_agent_id") or None,
             ),
         )
         return int(cur.lastrowid)
@@ -714,7 +891,7 @@ def update_bot(bot_id: int, data: dict[str, Any]) -> bool:
     with connection() as conn:
         cur = conn.execute(
             "UPDATE bots SET name=?, token=?, username=?, enabled=?, trigger=?, "
-            "update_offset=?, business_connections=?, known_chats=? WHERE id=?",
+            "update_offset=?, business_connections=?, known_chats=?, ai_agent_id=? WHERE id=?",
             (
                 merged.get("name", ""),
                 merged.get("token", ""),
@@ -724,6 +901,7 @@ def update_bot(bot_id: int, data: dict[str, Any]) -> bool:
                 str(merged.get("update_offset") or "0"),
                 merged.get("business_connections") or "",
                 merged.get("known_chats") or "",
+                merged.get("ai_agent_id") or None,
                 bot_id,
             ),
         )
