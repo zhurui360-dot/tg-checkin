@@ -324,8 +324,7 @@ def _qr_worker() -> None:
         asyncio.set_event_loop(loop)
 
         client = make_client("")
-        client.connect()
-        client.loop = loop  # 让 syncified 调用固定用这个循环
+        client.connect()  # syncified 调用会用当前线程已设置的 loop
         if client.is_user_authorized():
             me = client.get_me()
             _qr_finish(client, me)
@@ -412,11 +411,13 @@ def qr_start(api_id: str, api_hash: str, proxy_url: str = "") -> dict[str, Any]:
     with _qr_lock:
         _qr_state["thread"] = thread
 
-    # 等一小会儿让第一张码出来，面板就能立刻渲染
-    for _ in range(30):
-        time.sleep(0.2)
-        if _qr_state.get("svg") or _qr_state.get("status") in ("authorized", "error"):
-            break
+    # 等第一张码出来再返回，面板就能立刻渲染（握手+建链通常 3~8 秒）
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        time.sleep(0.25)
+        with _qr_lock:
+            if _qr_state.get("svg") or _qr_state.get("status") in ("authorized", "error"):
+                break
     return qr_status()
 
 

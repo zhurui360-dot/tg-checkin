@@ -5,3 +5,4 @@ APScheduler>=3.10
 PySocks>=1.7
 tzdata>=2024
 qrcode>=7.4
+python-socks[asyncio]>=2.4
