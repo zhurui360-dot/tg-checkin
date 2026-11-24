@@ -3,4 +3,6 @@ __pycache__/
 .env
 data/
 .venv/
-.venv/
+
+# 配置导出含明文密钥，绝不能进仓库
+backup/
