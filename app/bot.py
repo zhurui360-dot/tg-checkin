@@ -14,11 +14,15 @@ update_offset / 最近消息缓存 / Business 连接，互不干扰。
 """
 from __future__ import annotations
 
+import functools
+import http.client
 import json
 import logging
+import os
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any
 
@@ -26,9 +30,133 @@ from . import db, memory, security
 
 log = logging.getLogger("tg-checkin.bot")
 
-API_ROOT = "https://api.telegram.org"
-# 绕过环境里的 http_proxy，避免容器内代理干扰出网
-_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+# Telegram API 根地址。默认官方域名；填了 TG_API_ROOT 就用它（自建反代 / 中转）。
+# 部署在无法直连 telegram.org 的网络里时，这是最省事的一条路：
+# 找一台能出网的机器把 /bot 路径反向代理回来，然后把这里指向它。
+API_ROOT = (os.getenv("TG_API_ROOT", "").strip().rstrip("/")) or "https://api.telegram.org"
+
+# 出网代理。留空 = 直连。
+# 支持 http://、https://、socks5://、socks5h://，带账号密码也行。
+# 为什么需要它：容器默认会绕开环境变量里的 http_proxy（见 _build_opener），
+# 所以只设 http_proxy 是没用的，必须显式给这一项。
+TG_PROXY = os.getenv("TG_PROXY", "").strip()
+
+
+class _SocksHTTPConnection(http.client.HTTPConnection):
+    """把 connect() 换成走 SOCKS 的版本。
+
+    不 patch 全局 socket：服务端自己的监听/accept 也走 socket 模块，
+    全局替换会连入站连接一起改掉，容易把面板搞挂。这里只影响出站这一条链。
+    """
+
+    _proxy: tuple = ()
+
+    def __init__(self, *args: Any, proxy: tuple = (), **kwargs: Any) -> None:
+        self._proxy = proxy
+        super().__init__(*args, **kwargs)
+
+    def connect(self) -> None:
+        self.sock = _socks_connect(self._proxy, self.host, self.port, self.timeout)
+
+
+class _SocksHTTPSConnection(http.client.HTTPSConnection):
+    _proxy: tuple = ()
+
+    def __init__(self, *args: Any, proxy: tuple = (), **kwargs: Any) -> None:
+        self._proxy = proxy
+        super().__init__(*args, **kwargs)
+
+    def connect(self) -> None:
+        raw = _socks_connect(self._proxy, self.host, self.port, self.timeout)
+        self.sock = self._context.wrap_socket(raw, server_hostname=self.host)
+
+
+def _socks_connect(proxy: tuple, host: str, port: int, timeout: Any):
+    import socket as _socket
+
+    try:
+        import socks  # PySocks
+    except ImportError as exc:  # 依赖没装时给一句能看懂的话
+        raise OSError("SOCKS 代理需要 PySocks，镜像里已包含，请确认 requirements.txt 没被改动") from exc
+    _, phost, pport, puser, ppass = proxy
+    sock = socks.socksocket()
+    sock.set_proxy(socks.SOCKS5, phost, pport, True, puser or None, ppass or None)
+    if timeout:
+        sock.settimeout(timeout)
+    sock.connect((host, int(port)))
+    return sock
+
+
+class _SocksProxyHandler(urllib.request.HTTPSHandler):
+    """同时接管 http/https，全部经 SOCKS 出去。"""
+
+    def __init__(self, proxy: tuple) -> None:
+        super().__init__()
+        self._proxy = proxy
+        self._http_cls = functools.partial(_SocksHTTPConnection, proxy=proxy)
+        self._https_cls = functools.partial(_SocksHTTPSConnection, proxy=proxy)
+
+    def http_open(self, req):
+        return self.do_open(self._http_cls, req)
+
+    def https_open(self, req):
+        return self.do_open(self._https_cls, req, context=self._context)
+
+
+def _parse_proxy(raw: str) -> tuple | None:
+    """把代理串解析成 (kind, host, port, user, password)。解析不出来就当没配。"""
+    text = (raw or "").strip()
+    if not text:
+        return None
+    if "://" not in text:
+        # 用户常直接填 192.168.1.2:7890，补一个默认协议
+        text = "http://" + text
+    try:
+        parsed = urllib.parse.urlparse(text)
+        scheme = (parsed.scheme or "http").lower()
+        if not parsed.hostname:
+            return None
+        kind = "socks5" if scheme.startswith("socks") else "http"
+        from urllib.parse import unquote
+
+        port = parsed.port or (1080 if kind == "socks5" else 8080)
+        return (
+            kind,
+            parsed.hostname,
+            int(port),
+            unquote(parsed.username) if parsed.username else "",
+            unquote(parsed.password) if parsed.password else "",
+        )
+    except (ValueError, TypeError):
+        return None
+
+
+def _build_opener(proxy_url: str | None = None) -> urllib.request.OpenerDirector:
+    """按代理配置造 opener。
+
+    proxy_url 为 None 表示用 TG_PROXY；传 "" 表示强制直连（自检用）。
+    """
+    raw = TG_PROXY if proxy_url is None else proxy_url
+    spec = _parse_proxy(raw)
+    # 显式清空：容器环境里常带 http_proxy，不清空会连到不该去的地方；
+    # SOCKS 分支也一样——留着它，环境变量里的代理会盖掉我们的设置。
+    no_env_proxy = urllib.request.ProxyHandler({})
+    if not spec:
+        return urllib.request.build_opener(no_env_proxy)
+
+    kind, host, port, user, password = spec
+    if kind == "socks5":
+        return urllib.request.build_opener(no_env_proxy, _SocksProxyHandler(spec))
+
+    cred = f"{urllib.parse.quote(user, safe='')}:{urllib.parse.quote(password, safe='')}@" if user else ""
+    url = f"http://{cred}{host}:{port}"
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler({"http": url, "https": url})
+    )
+
+
+# 默认 opener 只造一次；代理配置是启动期固定的，改了要重启容器
+_opener = _build_opener()
 
 _lock = threading.RLock()
 # bot_id -> 运行时（线程、停止信号、状态、最近消息）
@@ -176,6 +304,81 @@ def _runtime(bot_id: int | None = None) -> dict[str, Any]:
 
 def _state_of(bot_id: int | None = None) -> dict[str, Any]:
     return _runtime(bot_id)["state"]
+
+
+# ---------------- 出网体检 ----------------
+
+def _probe(url: str, proxy_url: str, timeout: int = 12) -> dict[str, Any]:
+    """打一次 HEAD/GET，只回报「通不通、多快、错在哪」。"""
+    started = time.time()
+    opener = _build_opener(proxy_url)
+    try:
+        request = urllib.request.Request(url, method="GET", headers={"User-Agent": "tg-checkin-probe/1.0"})
+        with opener.open(request, timeout=timeout) as response:
+            return {
+                "ok": True,
+                "status": response.status,
+                "ms": int((time.time() - started) * 1000),
+            }
+    except urllib.error.HTTPError as exc:
+        # 4xx/5xx 也算「网络通了」——说明 DNS 和 TCP 都没问题，是应用层的事
+        return {
+            "ok": exc.code < 500,
+            "status": exc.code,
+            "ms": int((time.time() - started) * 1000),
+            "error": "" if exc.code < 500 else f"HTTP {exc.code}",
+        }
+    except Exception as exc:  # noqa: BLE001 - 自检要把所有异常都翻成人话
+        detail = getattr(exc, "reason", exc)
+        return {
+            "ok": False,
+            "status": 0,
+            "ms": int((time.time() - started) * 1000),
+            "error": str(detail)[:200],
+        }
+
+
+def diagnose() -> dict[str, Any]:
+    """出网体检：分别验「直连」「代理」「当前生效的根地址」。
+
+    部署在只允许出网、不允许入网的环境（家用 NAS、公司内网）时，
+    面板上最能说清楚问题的就是这一步：到底连不上 Telegram，还是 token 不对。
+    """
+    proxy_spec = _parse_proxy(TG_PROXY)
+    proxy_label = ""
+    if proxy_spec:
+        kind, host, port, user, _ = proxy_spec
+        proxy_label = f"{kind}://{host}:{port}" + (f"（账号 {user}）" if user else "")
+
+    direct = _probe(f"{API_ROOT}/", "")
+    proxied = _probe(f"{API_ROOT}/", TG_PROXY) if TG_PROXY else None
+    effective = proxied if (TG_PROXY and proxied and proxied.get("ok")) else direct
+
+    hint = ""
+    if effective.get("ok"):
+        hint = "出网正常，可以校验 Bot Token 了"
+    elif not TG_PROXY:
+        hint = (
+            "连不上 Telegram。这个网络需要代理：在 .env 里填 TG_PROXY="
+            "http://代理IP:端口（或 socks5://代理IP:端口），然后重启容器。"
+        )
+    elif proxied and not proxied.get("ok"):
+        hint = (
+            f"代理 {proxy_label} 也连不上。先在 NAS 终端里试 "
+            f"curl -x {proxy_label.split('（')[0]} https://api.telegram.org —— "
+            "如果这条也不通，是代理本身的问题；如果这条通、面板不通，把代理协议换一种再试。"
+        )
+
+    return {
+        "ok": bool(effective.get("ok")),
+        "api_root": API_ROOT,
+        "proxy": proxy_label,
+        "proxy_configured": bool(proxy_spec),
+        "direct": direct,
+        "proxied": proxied,
+        "effective": "proxy" if (TG_PROXY and proxied and proxied.get("ok")) else "direct",
+        "hint": hint,
+    }
 
 
 # ---------------- Token 校验 ----------------
@@ -372,13 +575,8 @@ def call_ai(messages: list[dict[str, str]], agent: dict[str, Any] | None = None)
     ).encode("utf-8")
 
     # 配置了代理就走代理，否则直连（容器内环境变量常带代理，直连必须显式清空）
-    proxy = (cfg.get("ai_proxy") or "").strip()
-    if proxy:
-        opener = urllib.request.build_opener(
-            urllib.request.ProxyHandler({"http": proxy, "https": proxy})
-        )
-    else:
-        opener = _opener
+    ai_proxy = (cfg.get("ai_proxy") or "").strip()
+    opener = _build_opener(ai_proxy) if ai_proxy else _opener
 
     request = urllib.request.Request(
         url,
@@ -517,12 +715,7 @@ def list_models(base_url: str, api_key: str, proxy: str = "") -> dict[str, Any]:
         raise BotError(str(exc)) from exc
 
     proxy = (proxy or "").strip()
-    if proxy:
-        opener = urllib.request.build_opener(
-            urllib.request.ProxyHandler({"http": proxy, "https": proxy})
-        )
-    else:
-        opener = _opener
+    opener = _build_opener(proxy) if proxy else _opener
 
     request = urllib.request.Request(
         url,
@@ -999,6 +1192,10 @@ def _status_one(bot_id: int | None = None) -> dict[str, Any]:
         "ai_base_url": cfg.get("ai_base_url", ""),
         "ai_model": cfg.get("ai_model", ""),
         "ai_key_set": bool((cfg.get("ai_api_key") or "").strip()),
+        # 面板上直接能看到「出网走哪条路」，不用翻容器日志
+        "api_root": API_ROOT,
+        "proxy": (f"{_parse_proxy(TG_PROXY)[0]}://{_parse_proxy(TG_PROXY)[1]}:{_parse_proxy(TG_PROXY)[2]}"
+                  if _parse_proxy(TG_PROXY) else ""),
     }
 
 

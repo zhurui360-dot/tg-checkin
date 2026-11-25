@@ -758,6 +758,12 @@ def bot_chats(bot_id: int | None = Query(None), _: None = Depends(require_auth))
     return {"chats": list(seen.values())}
 
 
+@app.get("/api/bot/diagnose")
+def bot_diagnose(_: None = Depends(require_auth)) -> dict[str, Any]:
+    """出网体检：NAS / 内网部署时，先看这一步就知道卡在哪。"""
+    return bot.diagnose()
+
+
 @app.post("/api/bot/verify")
 def bot_verify(body: dict[str, Any], _: None = Depends(require_auth)) -> dict[str, Any]:
     """校验 Bot Token，成功则保存到默认机器人（老接口，兼容面板旧按钮）。"""

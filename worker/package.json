@@ -1,0 +1,20 @@
+{
+  "name": "tg-checkin-cf",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Telegram AI 机器人 + 签到面板 · Cloudflare Workers 版",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:init": "wrangler d1 execute tg-checkin --remote --file=./schema.sql",
+    "db:init:local": "wrangler d1 execute tg-checkin --local --file=./schema.sql",
+    "typecheck": "tsc --noEmit",
+    "test": "tsc -p tsconfig.build.json && node tests/logic.test.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.0.0",
+    "typescript": "^5.7.0",
+    "wrangler": "^4.30.0"
+  }
+}

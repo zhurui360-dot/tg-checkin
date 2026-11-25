@@ -17,6 +17,11 @@ services:
       AI_BASE_URL: ${AI_BASE_URL:-}
       AI_API_KEY: ${AI_API_KEY:-}
       AI_MODEL: ${AI_MODEL:-}
+      # 出网代理与 API 根地址。家宽/内网直连不了 telegram.org 时填这里，
+      # 这个程序是主动拉消息的，不需要入站端口，所以只配这两项就够。
+      TG_PROXY: ${TG_PROXY:-}
+      TG_API_ROOT: ${TG_API_ROOT:-}
+      AI_PROXY: ${AI_PROXY:-}
     ports:
       - "${PANEL_PORT:-8000}:8000"
     volumes:
