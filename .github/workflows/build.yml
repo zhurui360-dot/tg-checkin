@@ -9,10 +9,12 @@ name: build
 #   Docker Hub（可选）→ docker.io/<user>/<repo>，配好 DOCKERHUB_USERNAME /
 #     DOCKERHUB_TOKEN 两个 secret 后自动启用；没配就整段跳过。
 #
-# 关键一：provenance / sbom 必须显式关掉。实测这台 NAS 的拉取器不认
-# buildx 默认附带的 attestation manifest —— 请求会直接返回 errno 52428803，
-# 连下载任务都不生成；而干净的 manifest 能正常拉。
-# 关键二：GHCR 包默认私有，必须 PATCH 成 public，否则 NAS 上匿名拉不到。
+# 三条踩过的坑，改动前先看：
+#   1) 必须同时构建 amd64 + arm64。这台 NAS 是 ARM64，只推 amd64 的镜像
+#      会拉取失败、或者拉下来 exec format error 直接 exit 255 无限重启。
+#   2) 关掉 provenance / sbom。buildx 默认附带的 attestation manifest 会让
+#      这台 NAS 的拉取器直接报 errno 52428803，连下载任务都不生成。
+#   3) GHCR 包默认私有，必须 PATCH 成 public，否则 NAS 上匿名拉不到。
 on:
   push:
     branches: [main]
@@ -36,6 +38,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # buildx + qemu：qemu 用来在 x86 runner 上模拟编译 arm64 层
+      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
       # ---- 登录（PR 只验证构建，不登录也不推）----
@@ -54,8 +58,7 @@ jobs:
           username: ${{ env.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # ---- 标签 ----
-      - id: meta-ghcr
+      - id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.GHCR_IMAGE }}
@@ -65,50 +68,35 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - id: meta-hub
-        if: env.DOCKERHUB_USERNAME != ''
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.DOCKERHUB_IMAGE }}
-          tags: |
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      # ---- 构建一次，再分头推 ----
-      - name: 构建
+      # ---- 构建 + 推 GHCR ----
+      - name: 构建并推送
         uses: docker/build-push-action@v6
         with:
           context: .
-          load: true
-          tags: ${{ env.GHCR_IMAGE }}:latest
-          # amd64 覆盖绝大多数 NAS；要跑 ARM 设备就改成 linux/amd64,linux/arm64
-          platforms: linux/amd64
-          # 这两行是 NAS 能拉取的前提，别删
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # 双架构：amd64 给常规机器，arm64 给这台 NAS
+          platforms: linux/amd64,linux/arm64
+          # 这两行是这台 NAS 能拉取的前提，别删
           provenance: false
           sbom: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: 推送 GHCR
-        if: github.event_name != 'pull_request'
-        run: |
-          set -e
-          echo "${{ steps.meta-ghcr.outputs.tags }}" | tr ',' '\n' | while read -r t; do
-            [ -n "$t" ] || continue
-            docker tag "${{ env.GHCR_IMAGE }}:latest" "$t"
-            docker push "$t"
-          done
-
-      - name: 推送 Docker Hub
+      # ---- 复制到 Docker Hub（不重新构建，直接搬 manifest list）----
+      - name: 推 Docker Hub
         if: github.event_name != 'pull_request' && env.DOCKERHUB_USERNAME != ''
         run: |
           set -e
-          echo "${{ steps.meta-hub.outputs.tags }}" | tr ',' '\n' | while read -r t; do
+          SRC="${{ env.GHCR_IMAGE }}:latest"
+          echo "${{ steps.meta.outputs.tags }}" | tr ',' '\n' | while read -r t; do
             [ -n "$t" ] || continue
-            docker tag "${{ env.GHCR_IMAGE }}:latest" "$t"
-            docker push "$t"
+            # 取 tag 后缀，映射到 Docker Hub 同名标签
+            suffix="${t##*:}"
+            dst="${{ env.DOCKERHUB_IMAGE }}:${suffix}"
+            echo "复制 $SRC -> $dst"
+            docker buildx imagetools create --tag "$dst" "$SRC"
           done
 
       - name: 把 GHCR 包设为 public
