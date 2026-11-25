@@ -9,6 +9,9 @@ services:
     environment:
       TZ: ${TZ:-Asia/Shanghai}
       DATA_DIR: /app/data
+      # 模块：bot=只跑 AI 机器人 / checkin=只跑签到 / both=两者都要。
+      # 留空则首次打开面板时弹「三选一」向导。填了就跳过向导，直连对应界面。
+      MODULES: ${MODULES:-}
       # AI 机器人可选初始值，留空则用面板里配置的值
       BOT_TOKEN: ${BOT_TOKEN:-}
       AI_BASE_URL: ${AI_BASE_URL:-}

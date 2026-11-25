@@ -19,37 +19,63 @@
   </div>
 </div>
 
+<div id="setupScreen" class="login-screen hidden">
+  <div class="setup-card">
+    <div class="login-logo">TG</div>
+    <h2>选择要启用的模块</h2>
+    <p class="muted" style="margin:0 0 20px">不需要的模块不会启动，省资源。之后随时可以在「系统设置」里改。</p>
+    <div class="setup-options">
+      <button class="setup-option" data-module="bot">
+        <span class="setup-ico">🤖</span>
+        <strong>AI 机器人</strong>
+        <small>接大模型，私聊 / 群聊里自动陪聊，可命名、有长期记忆。不含签到。</small>
+      </button>
+      <button class="setup-option" data-module="checkin">
+        <span class="setup-ico">📅</span>
+        <strong>TG 签到</strong>
+        <small>多账号定时签到，支持补签、失败重试、结果通知。不含 AI 机器人。</small>
+      </button>
+      <button class="setup-option" data-module="both">
+        <span class="setup-ico">🚀</span>
+        <strong>AI 机器人 + 签到</strong>
+        <small>两个都要。签到当附件功能，机器人是主角，互不干扰。</small>
+      </button>
+    </div>
+    <p id="setupError" class="error-text"></p>
+  </div>
+</div>
+
 <div class="layout">
   <aside class="sidebar">
     <div class="brand">
       <span class="brand-mark">TG</span>
       <div>
-        <strong>签到控制台</strong>
-        <small>Telegram Check-in</small>
+        <strong id="brandName">签到控制台</strong>
+        <small id="brandSub">Telegram Check-in</small>
       </div>
     </div>
     <nav class="nav">
-      <button class="nav-item active" data-tab="dashboard">
+      <button class="nav-item active" data-tab="dashboard" data-module="both">
         <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="2"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="2"/></svg>
         概览
       </button>
-      <button class="nav-item" data-tab="groups">
+      <button class="nav-item" data-tab="groups" data-module="checkin">
         <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-1.8a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4V21"/><circle cx="9" cy="7.2" r="3.6"/><path d="M22 21v-1.8a4 4 0 0 0-3-3.87"/><path d="M16.5 3.9a4 4 0 0 1 0 7.5"/></svg>
         群组管理
       </button>
-      <button class="nav-item" data-tab="bot">
+      <button class="nav-item" data-tab="bot" data-module="bot">
         <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="7.5" width="17" height="12.5" rx="4"/><path d="M12 7.5V4"/><circle cx="12" cy="3" r="1.2"/><path d="M8.5 13h.01M15.5 13h.01"/><path d="M9.5 16.8h5"/></svg>
         AI 机器人
       </button>
-      <button class="nav-item" data-tab="account">
+      <button class="nav-item" data-tab="account" data-module="checkin">
         <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4.5 21a7.5 7.5 0 0 1 15 0"/></svg>
         账号与登录
       </button>
-      <button class="nav-item" data-tab="settings">
+      <button class="nav-item" data-tab="settings" data-module="both">
         <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.11a1.7 1.7 0 0 0-1.1-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.11A1.7 1.7 0 0 0 4.67 8.6a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34H9a1.7 1.7 0 0 0 1-1.56V3a2 2 0 1 1 4 0v.11a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V9a1.7 1.7 0 0 0 1.56 1H21a2 2 0 1 1 0 4h-.11a1.7 1.7 0 0 0-1.56 1z"/></svg>
         系统设置
       </button>
-      <button class="nav-item" data-tab="logs">
+      <button class="nav-item" data-tab="logs" data-module="checkin">
         <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 2.5H7A2.5 2.5 0 0 0 4.5 5v14A2.5 2.5 0 0 0 7 21.5h10a2.5 2.5 0 0 0 2.5-2.5V7.5z"/><path d="M14.5 2.5v5h5"/><path d="M8.5 12.5h7M8.5 16.5h4.5"/></svg>
         运行日志
       </button>
@@ -81,11 +107,18 @@
 
       <!-- 概览 -->
       <section id="tab-dashboard" class="tab-panel active">
-        <div class="stats-grid">
+        <div class="stats-grid" data-module="checkin">
           <div class="stat-card"><span class="stat-label">启用群组</span><strong id="statEnabled">0</strong><span class="stat-foot" id="statGroups">共 0 个群组</span></div>
           <div class="stat-card ok"><span class="stat-label">今日成功</span><strong id="statSuccess">0</strong><span class="stat-foot">按本地日期统计</span></div>
           <div class="stat-card err"><span class="stat-label">今日失败</span><strong id="statFailed">0</strong><span class="stat-foot">可到日志页查看详情</span></div>
           <div class="stat-card"><span class="stat-label">累计执行</span><strong id="statTotal">0</strong><span class="stat-foot" id="statJobs">调度任务 0 个</span></div>
+        </div>
+
+        <div class="stats-grid" data-module="bot">
+          <div class="stat-card"><span class="stat-label">机器人</span><strong id="statBotCount">0</strong><span class="stat-foot" id="statBotFoot">共 0 个</span></div>
+          <div class="stat-card ok"><span class="stat-label">运行中</span><strong id="statBotRunning">0</strong><span class="stat-foot">正在接收消息</span></div>
+          <div class="stat-card"><span class="stat-label">累计回复</span><strong id="statBotReplies">0</strong><span class="stat-foot">AI 自动回复条数</span></div>
+          <div class="stat-card"><span class="stat-label">智能体</span><strong id="statAgentCount">0</strong><span class="stat-foot" id="statAgentFoot">未设置默认</span></div>
         </div>
 
         <div class="card">
@@ -100,20 +133,25 @@
         </div>
 
         <div class="two-col">
-          <div class="card">
+          <div class="card" data-module="checkin">
             <div class="card-head"><h3>最近运行</h3><button class="link-btn" data-goto="logs">查看全部 ›</button></div>
             <div id="recentLogs" class="empty">暂无运行记录</div>
           </div>
           <div class="card">
             <div class="card-head"><h3>快捷操作</h3></div>
             <div class="quick-actions">
-              <button class="btn primary" data-goto="groups">添加签到群组</button>
-              <button class="btn" id="quickAccount">检查 Telegram 登录</button>
+              <button class="btn primary" data-goto="groups" data-module="checkin">添加签到群组</button>
+              <button class="btn" id="quickAccount" data-module="checkin">检查 Telegram 登录</button>
+              <button class="btn primary" data-goto="bot" data-module="bot">添加 AI 机器人</button>
               <button class="btn" id="quickRefresh">重新加载面板</button>
             </div>
-            <div class="notice">
+            <div class="notice" data-module="checkin">
               <strong>运行机制</strong>
               <p>服务按每个群组配置的 cron 时间往群里发签到指令。可以接多个 Telegram 账号和多个机器人，每个群组单独指定「用哪个账号 / 哪个机器人」签到，没指定就跟随「系统设置 → 谁来签到」的默认值。定时点没在线（容器休眠或重启）时，补签线程会在上线后立刻补一次，保证每天至少成功一次。</p>
+            </div>
+            <div class="notice" data-module="bot">
+              <strong>运行机制</strong>
+              <p>机器人连上后会在私聊和群里被 @ 时自动回复，走你配置的大模型。名字会写进它的自我认知，被问「你叫什么」会如实回答；上下文记住最近几轮对话，长期记忆跨会话保留称呼、偏好这类稳定信息。同一份配置可以挂多个机器人，各用各的智能体。</p>
             </div>
           </div>
         </div>
@@ -236,32 +274,53 @@
       <!-- 系统设置 -->
       <section id="tab-settings" class="tab-panel">
         <div class="card">
-          <div class="card-head"><h3>运行参数</h3><span class="muted">修改后自动热重载调度任务</span></div>
+          <div class="card-head"><h3>已启用模块</h3><span class="muted" id="moduleNow">加载中…</span></div>
+          <p class="muted" style="margin:8px 0 14px">只运行你选的模块，其余的后台线程不会启动，省内存也省 CPU。切换后立即生效，不用重启容器。</p>
+          <div class="setup-options" id="moduleSwitch">
+            <button class="setup-option" data-pick-module="bot">
+              <span class="setup-ico">🤖</span>
+              <strong>AI 机器人</strong>
+              <small>只跑机器人，不启动签到调度</small>
+            </button>
+            <button class="setup-option" data-pick-module="checkin">
+              <span class="setup-ico">📅</span>
+              <strong>TG 签到</strong>
+              <small>只跑签到，不接大模型</small>
+            </button>
+            <button class="setup-option" data-pick-module="both">
+              <span class="setup-ico">🚀</span>
+              <strong>两者都要</strong>
+              <small>机器人 + 签到全开</small>
+            </button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>运行参数</h3><span class="muted" id="settingsHint">修改后自动热重载调度任务</span></div>
           <form id="settingsForm" class="form-grid">
-            <label class="field"><span>时区</span><input name="timezone" value="Asia/Shanghai" placeholder="Asia/Shanghai"></label>
-            <label class="field"><span>失败重试次数</span><input name="retry_count" type="number" min="0" max="5" value="2"></label>
-            <label class="field"><span>重试间隔（秒）</span><input name="retry_delay" type="number" min="0" value="10"></label>
-            <label class="field"><span>随机延迟上限（秒）</span><input name="jitter" type="number" min="0" value="5"></label>
-            <label class="field"><span>结果通知到会话</span><input name="notify_chat" placeholder="留空不通知，可填 @username 或自己的 ID"></label>
-            <label class="field"><span>失败关键词（逗号分隔）</span><input name="fail_keywords" placeholder="例如：签到失败,未到时间"></label>
-            <label class="field"><span>谁来签到</span><input value="固定用已登录的账号" disabled></label>
-            <label class="field"><span>模拟运行</span><select name="dry_run"><option value="0">关闭（真实发送）</option><option value="1">开启（不发送消息）</option></select></label>
+            <label class="field" data-module="checkin"><span>时区</span><input name="timezone" value="Asia/Shanghai" placeholder="Asia/Shanghai"></label>
+            <label class="field" data-module="checkin"><span>失败重试次数</span><input name="retry_count" type="number" min="0" max="5" value="2"></label>
+            <label class="field" data-module="checkin"><span>重试间隔（秒）</span><input name="retry_delay" type="number" min="0" value="10"></label>
+            <label class="field" data-module="checkin"><span>随机延迟上限（秒）</span><input name="jitter" type="number" min="0" value="5"></label>
+            <label class="field" data-module="checkin"><span>结果通知到会话</span><input name="notify_chat" placeholder="留空不通知，可填 @username 或自己的 ID"></label>
+            <label class="field" data-module="checkin"><span>失败关键词（逗号分隔）</span><input name="fail_keywords" placeholder="例如：签到失败,未到时间"></label>
+            <label class="field" data-module="checkin"><span>谁来签到</span><input value="固定用已登录的账号" disabled></label>
+            <label class="field" data-module="checkin"><span>模拟运行</span><select name="dry_run"><option value="0">关闭（真实发送）</option><option value="1">开启（不发送消息）</option></select></label>
             <label class="field"><span>面板密码（留空不修改）</span><input name="panel_password" type="password" placeholder="留空保持原密码"></label>
-            <label class="field"><span>每日补签（上线即补）</span><select name="catchup_enabled"><option value="1">开启（推荐）</option><option value="0">关闭</option></select></label>
-            <label class="field"><span>补签检查间隔（秒，120-3600）</span><input name="catchup_interval" type="number" min="120" max="3600" value="600"></label>
-            <label class="field"><span>同群补签冷却（秒）</span><input name="catchup_cooldown" type="number" min="0" value="1800"></label>
+            <label class="field" data-module="checkin"><span>每日补签（上线即补）</span><select name="catchup_enabled"><option value="1">开启（推荐）</option><option value="0">关闭</option></select></label>
+            <label class="field" data-module="checkin"><span>补签检查间隔（秒，120-3600）</span><input name="catchup_interval" type="number" min="120" max="3600" value="600"></label>
+            <label class="field" data-module="checkin"><span>同群补签冷却（秒）</span><input name="catchup_cooldown" type="number" min="0" value="1800"></label>
             <div class="span-2 form-actions">
               <button type="submit" class="btn primary">保存设置</button>
-              <button type="button" class="btn" id="catchupRunBtn">立即补签一次</button>
+              <button type="button" class="btn" id="catchupRunBtn" data-module="checkin">立即补签一次</button>
               <button type="button" class="btn" id="exportConfigBtn">导出配置（含登录会话）</button>
             </div>
           </form>
-          <div class="notice" id="catchupNotice">
+          <div class="notice" id="catchupNotice" data-module="checkin">
             <strong>补签状态</strong>
             <p id="catchupText">加载中…</p>
           </div>
         </div>
-        <div class="notice wide">
+        <div class="notice wide" data-module="checkin">
           <strong>提示</strong>
           <p>cron 为 5 段格式：分 时 日 月 周。随机延迟会在每次发送前增加 0 到设定值之间的等待，降低固定时间点的机械特征。模拟运行适合先验证连接和群组是否正确。</p>
         </div>

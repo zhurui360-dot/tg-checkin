@@ -5,6 +5,7 @@
   const state = {
     data: null,
     tab: "dashboard",
+    module: "",
     editingGroupId: null,
     editingAccountId: null,
     editingBotId: null,
@@ -34,6 +35,44 @@
     settings: ["系统设置", "重试、通知、补签等全局参数"],
     logs: ["运行日志", "查看每一次签到执行的结果与机器人回复"],
   };
+
+  // 模块模式下页面呈现：bot 模式不叫「签到控制台」，概览描述也不同
+  const MODULE_UI = {
+    bot: {
+      brand: "AI 机器人控制台",
+      brandSub: "Telegram AI Bot",
+      titles: {
+        dashboard: ["概览", "机器人运行状态与回复量一览"],
+        settings: ["系统设置", "大模型、备份、面板密码等全局参数"],
+        bot: ["AI 机器人", "接入大模型陪聊，可命名、有长期记忆"],
+      },
+    },
+    checkin: {
+      brand: "签到控制台",
+      brandSub: "Telegram Check-in",
+      titles: {},
+    },
+    both: {
+      brand: "TG 控制台",
+      brandSub: "AI 机器人 · 签到",
+      titles: {},
+    },
+  };
+
+  // 每个 tab 归属哪个模块（both 永远显示；其余按当前模块决定）
+  const TAB_MODULE = {
+    dashboard: "both",
+    groups: "checkin",
+    bot: "bot",
+    account: "checkin",
+    settings: "both",
+    logs: "checkin",
+  };
+
+  function moduleAllows(module) {
+    if (!module || module === "both") return true;
+    return TAB_MODULE[module] === "both" || TAB_MODULE[module] === state.module;
+  }
 
   const TRIGGER_TEXT = {
     mention: "私聊 + 群里被 @",
@@ -122,6 +161,12 @@
     });
     $("pageTitle").textContent = TITLES[tab][0];
     $("pageDesc").textContent = TITLES[tab][1];
+    // 模块模式下标题/描述可能不同（如 bot 模式的概览）
+    const ui = MODULE_UI[state.module];
+    if (ui && ui.titles[tab]) {
+      $("pageTitle").textContent = ui.titles[tab][0];
+      $("pageDesc").textContent = ui.titles[tab][1];
+    }
     if (tab === "bot") {
       loadBotConfig();
       loadBotMessages();
@@ -195,14 +240,25 @@
     const agentOf = (id) => agents.find((a) => String(a.id) === String(id));
     const rtOf = (id) => runtime.find((b) => String(b.id) === String(id)) || {};
 
+    const running = runtime.filter((b) => b.running).length;
+    const totalReplies = runtime.reduce((sum, b) => sum + Number(b.replies || 0), 0);
+    const defaultAgent = agents.find((a) => a.is_default) || agents[0];
+
+    // 机器人模式的顶部统计卡
+    const set = (id, v) => { const el = $(id); if (el) el.textContent = v; };
+    set("statBotCount", bots.length);
+    set("statBotFoot", bots.length ? `共 ${bots.length} 个` : "还没添加");
+    set("statBotRunning", running);
+    set("statBotReplies", totalReplies);
+    set("statAgentCount", agents.length);
+    set("statAgentFoot", defaultAgent ? `默认：${defaultAgent.name || "未命名"}` : "未设置默认");
+
     if (!bots.length) {
       if (summary) summary.textContent = "还没有机器人";
       body.innerHTML = `<div class="empty">还没有 AI 机器人，到「AI 机器人」页从 @BotFather 拿个 token 加进来，配上大模型就能替你在群里 / 私聊里聊天。</div>`;
       return;
     }
 
-    const running = runtime.filter((b) => b.running).length;
-    const totalReplies = runtime.reduce((sum, b) => sum + Number(b.replies || 0), 0);
     if (summary) summary.textContent = `${bots.length} 个 · ${running} 运行中 · 累计回复 ${totalReplies}`;
 
     body.innerHTML = bots.map((b) => {
@@ -1231,6 +1287,8 @@
 
   function renderAll(data) {
     state.data = data;
+    state.module = data.module || state.module || "checkin";
+    if (maybeShowSetup(data)) return; // 未初始化：先让用户选模块，不渲染半套界面
     state.accounts = data.accounts || [];
     state.bots = data.bots || [];
     state.agents = data.ai_agents || [];
@@ -1327,6 +1385,88 @@
     }
   }
 
+  // ---------- 模块（初始化三选一） ----------
+
+  const MODULE_LABEL = { bot: "AI 机器人", checkin: "TG 签到", both: "AI 机器人 + 签到" };
+
+  async function pickModule(module) {
+    const buttons = document.querySelectorAll(".setup-option");
+    buttons.forEach((b) => { b.disabled = true; });
+    const errEl = $("setupError");
+    if (errEl) errEl.textContent = "";
+    try {
+      const result = await api("/api/setup/module", { method: "POST", body: { module } });
+      state.module = result.module || module;
+      $("setupScreen").classList.add("hidden");
+      applyModuleUi();
+      await loadBootstrap();
+      toast("已启用：" + MODULE_LABEL[state.module], "ok", 4000);
+    } catch (err) {
+      if (errEl) errEl.textContent = err.message;
+      else toast(err.message, "err");
+    } finally {
+      buttons.forEach((b) => { b.disabled = false; });
+    }
+  }
+
+  function applyModuleUi() {
+    const ui = MODULE_UI[state.module] || MODULE_UI.checkin;
+    $("brandName").textContent = ui.brand;
+    $("brandSub").textContent = ui.brandSub;
+    // 导航按模块显示/隐藏
+    document.querySelectorAll(".nav-item[data-tab]").forEach((btn) => {
+      btn.hidden = !moduleAllows(btn.dataset.tab);
+    });
+    // 页面内所有标了 data-module 的卡片 / 字段，按模块显示隐藏
+    document.querySelectorAll("[data-module]").forEach((el) => {
+      if (el.classList.contains("nav-item") || el.classList.contains("setup-option")) return;
+      const mod = el.dataset.module;
+      el.hidden = mod !== "both" && mod !== state.module;
+    });
+    // 停留的 tab 被隐藏时跳回概览
+    if (!moduleAllows(state.tab)) {
+      switchTab("dashboard");
+    } else {
+      const override = ui.titles[state.tab];
+      const t = override || TITLES[state.tab];
+      if (t) {
+        $("pageTitle").textContent = t[0];
+        $("pageDesc").textContent = t[1];
+      }
+    }
+    // 设置页的模块切换卡：高亮当前选中的
+    const now = $("moduleNow");
+    if (now) now.textContent = "当前：" + (MODULE_LABEL[state.module] || MODULE_LABEL.checkin);
+    const hint = $("settingsHint");
+    if (hint) {
+      hint.textContent = state.module === "bot"
+        ? "改完点保存即时生效"
+        : "修改后自动热重载调度任务";
+    }
+    document.querySelectorAll("[data-pick-module]").forEach((btn) => {
+      const on = btn.dataset.pickModule === state.module;
+      btn.style.borderColor = on ? "var(--brand)" : "";
+      btn.style.background = on ? "var(--brand-soft)" : "";
+    });
+    // 双列区块里只剩一张可见卡片时让它铺满整行
+    document.querySelectorAll(".two-col").forEach((box) => {
+      const visible = [...box.children].filter((el) => !el.hidden).length;
+      box.classList.toggle("single", visible <= 1);
+    });
+  }
+
+  function maybeShowSetup(data) {
+    const module = data.module || "";
+    state.module = module || "checkin";
+    if (!module) {
+      $("setupScreen").classList.remove("hidden");
+      return true;
+    }
+    $("setupScreen").classList.add("hidden");
+    applyModuleUi();
+    return false;
+  }
+
   async function loadBootstrap() {
     try {
       renderAll(await api("/api/bootstrap"));
@@ -1410,6 +1550,12 @@
   function bindEvents() {
     document.querySelectorAll(".nav-item").forEach((btn) => {
       btn.addEventListener("click", () => switchTab(btn.dataset.tab));
+    });
+    document.querySelectorAll(".setup-option[data-module]").forEach((btn) => {
+      btn.addEventListener("click", () => pickModule(btn.dataset.module));
+    });
+    document.querySelectorAll("[data-pick-module]").forEach((btn) => {
+      btn.addEventListener("click", () => pickModule(btn.dataset.pickModule));
     });
     document.querySelectorAll("[data-goto]").forEach((btn) => {
       btn.addEventListener("click", () => switchTab(btn.dataset.goto));

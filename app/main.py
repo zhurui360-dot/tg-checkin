@@ -39,6 +39,66 @@ COOKIE_NAME = security.SESSION_COOKIE
 # 否则两个进程会抢同一个 bot 的 getUpdates（Conflict）并重复签到。
 STANDBY = os.getenv("STANDBY", "").strip().lower() in ("1", "true", "yes", "on")
 
+# 模块化：bot=AI 机器人 / checkin=TG 签到 / both=两者都要。
+# 部署后用 MODULES 环境变量预填，或在面板的初始化向导里选。
+MODULE_CHOICES = ("bot", "checkin", "both")
+
+
+def _module_from_env() -> str:
+    value = os.getenv("MODULES", "").strip().lower()
+    return value if value in MODULE_CHOICES else ""
+
+
+def current_module() -> str:
+    """当前启用的模块。优先级：环境变量 > 数据库设置。空串表示「还没初始化过」。"""
+    env = _module_from_env()
+    if env:
+        return env
+    value = db.get_setting("module", "").strip().lower()
+    return value if value in MODULE_CHOICES else ""
+
+
+def _effective_module() -> str:
+    """lifespan 用的实际模块：还没初始化过就按 both 全量跑，功能一个不丢。"""
+    return current_module() or "both"
+
+
+def _want_checkin() -> bool:
+    return _effective_module() in ("checkin", "both")
+
+
+def _want_bot() -> bool:
+    return _effective_module() in ("bot", "both")
+
+
+def apply_modules(module: str | None = None) -> str:
+    """按当前模块启停后台线程。传 module 就先写库。返回生效后的模块。
+
+    这样初始化向导选完就能立刻生效，不用重启容器；不装的模块线程不跑，省资源。
+    """
+    if module:
+        if module not in MODULE_CHOICES:
+            raise HTTPException(status_code=400, detail=f"模块只能是 {MODULE_CHOICES} 之一")
+        db.set_setting("module", module)
+    if STANDBY:
+        return current_module() or "both"
+    if _want_checkin():
+        scheduler.start()
+        scheduler.start_catchup()
+    else:
+        scheduler.stop_catchup()
+        scheduler.shutdown()
+    if _want_bot():
+        bot.start()
+        if db.get_setting("assistant_enabled", "0") == "1":
+            assistant.start()
+    else:
+        assistant.stop()
+        bot.stop()
+    # 备份是通用能力，两个模块的数据都要保，始终开着
+    backup.start_auto()
+    return current_module() or "both"
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -55,13 +115,8 @@ async def lifespan(app: FastAPI):
     if STANDBY:
         log.warning("STANDBY=1：值守模式，只提供面板，不启动签到调度 / 机器人 / 自动备份")
     else:
-        scheduler.start()
-        scheduler.start_catchup()
-        bot.start()
-        backup.start_auto()
-        if db.get_setting("assistant_enabled", "0") == "1":
-            assistant.start()
-    log.info("TG Checkin Panel %s 已启动", __version__)
+        apply_modules()
+    log.info("TG Checkin Panel %s 已启动（模块：%s）", __version__, current_module() or "both")
     yield
     if not STANDBY:
         assistant.stop()
@@ -214,6 +269,20 @@ def panel_logout(response: Response) -> dict[str, Any]:
 
 # ---------------- 概览 ----------------
 
+@app.get("/api/setup/module")
+def get_setup_module(_: None = Depends(require_auth)) -> dict[str, Any]:
+    """初始化向导用：返回当前模块和可选项。"""
+    return {"module": current_module(), "choices": list(MODULE_CHOICES)}
+
+
+@app.post("/api/setup/module")
+def set_setup_module(body: dict[str, Any], _: None = Depends(require_auth)) -> dict[str, Any]:
+    """初始化向导三选一：写库并立刻按需启停线程，无需重启。"""
+    module = str(body.get("module") or "").strip().lower()
+    applied = apply_modules(module)
+    return {"ok": True, "module": applied}
+
+
 @app.get("/api/bootstrap")
 def bootstrap(_: None = Depends(require_auth)) -> dict[str, Any]:
     settings = db.get_settings()
@@ -225,6 +294,7 @@ def bootstrap(_: None = Depends(require_auth)) -> dict[str, Any]:
     return {
         "version": __version__,
         "standby": STANDBY,
+        "module": current_module(),  # bot / checkin / both / ""（空=未初始化，前端弹向导）
         "groups": db.list_groups(),
         "logs": db.list_logs(limit=60),
         "stats": db.stats(),

@@ -17,9 +17,26 @@ from typing import Any, Callable, TypeVar
 # 必须导入 telethon.sync：它会把 TelegramClient 的公开方法改写成「自己跑事件循环」的
 # 同步版本。少了这一行，client.connect() / get_me() 只会返回协程而不执行，
 # 账号模式的登录、签到全部静默失效（历史上踩过这个坑）。
-import telethon.sync  # noqa: F401  isort:skip
-from telethon import TelegramClient, errors as tg_errors, functions, types
-from telethon.sessions import StringSession
+# 但 telethon 是重依赖（连同 cryptography 等一起），纯「AI 机器人」部署用不到它，
+# 所以改成惰性加载：只有真正跑账号相关操作时才 import，省内存和启动时间。
+_telethon_loaded = False
+TelegramClient: Any = None  # noqa: F811  占位，加载后替换
+tg_errors: Any = None       # noqa: F811
+functions: Any = None       # noqa: F811
+types: Any = None           # noqa: F811
+StringSession: Any = None   # noqa: F811
+
+
+def _load_telethon() -> None:
+    global _telethon_loaded, TelegramClient, tg_errors, functions, types, StringSession
+    if _telethon_loaded:
+        return
+    import telethon.sync  # noqa: F401  isort:skip
+    from telethon import TelegramClient, errors as tg_errors, functions, types
+    from telethon.sessions import StringSession
+
+    _telethon_loaded = True
+
 
 from . import db
 from .bot import BotError as BotApiError
@@ -40,6 +57,7 @@ def _ensure_loop() -> None:
 
 def run_tg(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
     """把 Telegram 操作提交到唯一工作线程并等待结果。"""
+    _load_telethon()  # 账号操作才需要 telethon，第一次跑时才加载重依赖
 
     def wrapped() -> T:
         _ensure_loop()
@@ -195,6 +213,7 @@ def normalize_chat(chat: str) -> str | int:
 def friendly_error(exc: BaseException) -> str:
     if isinstance(exc, BotApiError):
         return str(exc)
+    _load_telethon()
     if isinstance(exc, tg_errors.FloodWaitError):
         return f"触发 Telegram 限流，请等待约 {exc.seconds} 秒后再试"
     if isinstance(exc, tg_errors.UsernameInvalidError):
@@ -224,15 +243,11 @@ def friendly_error(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
-_PERMISSION_ERRORS = tuple(
-    getattr(tg_errors, name)
-    for name in (
-        "ChatAdminRequiredError",
-        "ChatWriteForbiddenError",
-        "ChannelPrivateError",
-        "ChatForbiddenError",
-    )
-    if hasattr(tg_errors, name)
+_PERMISSION_ERROR_NAMES = (
+    "ChatAdminRequiredError",
+    "ChatWriteForbiddenError",
+    "ChannelPrivateError",
+    "ChatForbiddenError",
 )
 
 
@@ -241,7 +256,13 @@ def is_permission_error(exc: BaseException) -> bool:
     if isinstance(exc, BotApiError):
         text = str(exc)
         return any(k in text for k in ("权限", "管理员", "找不到", "不在群", "已被踢出"))
-    return isinstance(exc, _PERMISSION_ERRORS)
+    _load_telethon()
+    permission_errors = tuple(
+        getattr(tg_errors, name)
+        for name in _PERMISSION_ERROR_NAMES
+        if hasattr(tg_errors, name)
+    )
+    return isinstance(exc, permission_errors)
 
 
 def _resolve_entity(client: Any, chat: str) -> tuple[Any, str]:

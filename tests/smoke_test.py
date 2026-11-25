@@ -1035,4 +1035,49 @@ with TestClient(app) as client:
     # 名字里带空白也要先剥干净
     assert "小白" in _ab._self_identity({"name": "  小白  "})
 
-print("冒烟测试通过：健康检查、鉴权、群组 CRUD、cron 校验、设置保存、AI 机器人、多智能体、机器人签到、扫码登录、多账号、多机器人、补签、备份恢复、GitHub 备份脱敏（凭据不上传/空值不回写）、WebDAV 自动建目录、GitHub 仓库诊断、安全加固（会话签名/限速/响应头/出网护栏）、长期记忆（注入/去重/作用域）、账号自动回复配置与处理记录、大模型接入（地址纠错/返回格式兼容/限流提示）、机器人命名自我认知均正常")
+    # ---- 模块化（初始化三选一 / 按需启停线程）----
+    import app.main as _am
+    assert set(_am.MODULE_CHOICES) == {"bot", "checkin", "both"}
+    # 未初始化时按 both 全量跑，功能一个不丢
+    _db.set_setting("module", "")
+    assert _am.current_module() == ""
+    assert _am._effective_module() == "both"
+    assert _am._want_checkin() and _am._want_bot()
+    # 纯机器人：只跑机器人，签到调度不该起
+    _am.apply_modules("bot")
+    assert _am.current_module() == "bot"
+    assert _am._want_bot() and not _am._want_checkin()
+    # 纯签到：反过来
+    _am.apply_modules("checkin")
+    assert _am.current_module() == "checkin"
+    assert _am._want_checkin() and not _am._want_bot()
+    # 两个都要
+    _am.apply_modules("both")
+    assert _am._want_checkin() and _am._want_bot()
+    # 非法值必须拒绝，不能把线程搞成半开半关
+    try:
+        _am.apply_modules("everything")
+        raise AssertionError("非法模块应被拒绝")
+    except Exception as exc:
+        assert "模块" in str(exc)
+    # 环境变量优先级高于数据库
+    os.environ["MODULES"] = "bot"
+    assert _am.current_module() == "bot"
+    os.environ.pop("MODULES", None)
+    _db.set_setting("module", "both")
+
+    # ---- telethon 延迟加载：纯机器人模式不 import 签到用的重依赖 ----
+    import importlib
+    import sys as _sys
+    for name in list(_sys.modules):
+        if name.startswith("telethon"):
+            del _sys.modules[name]
+    import app.telegram as _tg2
+    importlib.reload(_tg2)
+    assert _tg2._telethon_loaded is False, "import telegram 时不该加载 telethon"
+    assert not any(m.startswith("telethon") for m in _sys.modules), "telethon 被提前加载了"
+    _tg2._load_telethon()
+    assert _tg2._telethon_loaded is True
+    assert _tg2.TelegramClient is not None
+
+print("冒烟测试通过：健康检查、鉴权、群组 CRUD、cron 校验、设置保存、AI 机器人、多智能体、机器人签到、扫码登录、多账号、多机器人、补签、备份恢复、GitHub 备份脱敏（凭据不上传/空值不回写）、WebDAV 自动建目录、GitHub 仓库诊断、安全加固（会话签名/限速/响应头/出网护栏）、长期记忆（注入/去重/作用域）、账号自动回复配置与处理记录、大模型接入（地址纠错/返回格式兼容/限流提示）、机器人命名自我认知、模块化（bot/checkin/both 按需启停 + telethon 延迟加载）均正常")

@@ -393,6 +393,8 @@ code {
 
 .two-col { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 16px; margin-bottom: 0; }
 .two-col > * { min-width: 0; margin-bottom: 16px; }
+/* 模块模式下只剩一张可见卡片（比如纯机器人模式没有「最近运行」）时铺满，避免右侧留空洞 */
+.two-col.single { grid-template-columns: minmax(0, 1fr); }
 
 /* ==========================================================================
    概览统计
@@ -870,6 +872,57 @@ tr.is-default:hover > td { background: color-mix(in srgb, var(--brand-soft) 80%,
 .login-card p { margin: 0 0 18px; }
 .login-card input { margin-bottom: 10px; text-align: center; }
 .login-card .btn.block { padding: 10px; }
+
+/* 初始化：模块三选一 */
+.setup-card {
+  width: 660px;
+  max-width: 100%;
+  background: var(--surface);
+  border: 1px solid rgba(255, 255, 255, .09);
+  border-radius: var(--r-lg);
+  box-shadow: 0 28px 70px rgba(0, 0, 0, .5);
+  padding: 30px 28px 26px;
+  text-align: center;
+}
+.setup-card h2 { margin: 0 0 3px; font-size: 19px; font-weight: 700; letter-spacing: -.02em; }
+.setup-options {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  text-align: left;
+}
+.setup-option {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 18px 16px;
+  border-radius: var(--r);
+  border: 1.5px solid var(--line);
+  background: var(--surface-2);
+  cursor: pointer;
+  font: inherit;
+  color: var(--text);
+  transition: border-color .16s var(--ease), background .16s var(--ease), transform .16s var(--ease), box-shadow .16s var(--ease);
+}
+.setup-option:hover {
+  border-color: var(--brand-line);
+  background: var(--brand-soft);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 22px rgba(11, 131, 187, .14);
+}
+.setup-option:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.setup-option[disabled] { opacity: .6; cursor: progress; transform: none; }
+.setup-ico { font-size: 22px; line-height: 1; }
+.setup-option strong { font-size: 14px; font-weight: 680; letter-spacing: -.01em; }
+.setup-option small { font-size: 12px; color: var(--text-2); line-height: 1.55; }
+
+@media (max-width: 720px) {
+  .setup-card { padding: 24px 18px 20px; }
+  .setup-options { grid-template-columns: 1fr; }
+  .setup-option { display: grid; grid-template-columns: auto 1fr; column-gap: 12px; row-gap: 3px; padding: 14px; }
+  .setup-ico { grid-row: 1 / span 2; align-self: center; }
+  .setup-option small { grid-column: 2; }
+}
 
 .modal {
   position: fixed;
