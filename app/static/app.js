@@ -180,6 +180,53 @@
       badge.className = "badge " + (authed ? "ok" : "warn");
     }
     $("versionText").textContent = "v" + data.version;
+
+    renderAiBots(data);
+  }
+
+  function renderAiBots(data) {
+    const body = $("aiBotBody");
+    const summary = $("aiBotSummary");
+    if (!body) return;
+    const bots = data.bots || [];
+    const agents = data.ai_agents || [];
+    const status = data.bot || {};
+    const runtime = status.bots || [];
+    const agentOf = (id) => agents.find((a) => String(a.id) === String(id));
+    const rtOf = (id) => runtime.find((b) => String(b.id) === String(id)) || {};
+
+    if (!bots.length) {
+      if (summary) summary.textContent = "还没有机器人";
+      body.innerHTML = `<div class="empty">还没有 AI 机器人，到「AI 机器人」页从 @BotFather 拿个 token 加进来，配上大模型就能替你在群里 / 私聊里聊天。</div>`;
+      return;
+    }
+
+    const running = runtime.filter((b) => b.running).length;
+    const totalReplies = runtime.reduce((sum, b) => sum + Number(b.replies || 0), 0);
+    if (summary) summary.textContent = `${bots.length} 个 · ${running} 运行中 · 累计回复 ${totalReplies}`;
+
+    body.innerHTML = bots.map((b) => {
+      const rt = rtOf(b.id);
+      const agent = b.ai_agent_id ? agentOf(b.ai_agent_id) : null;
+      const agentName = agent ? agent.name : "";
+      const agentModel = agent ? (agent.model || "") : "";
+      const state = rt.running
+        ? `<span class="badge ok">运行中</span>`
+        : b.token_set
+          ? `<span class="badge">已停止</span>`
+          : `<span class="badge err">无 Token</span>`;
+      const replyText = rt.replies != null ? `<span class="ai-bot-replies">回复 ${rt.replies}</span>` : "";
+      return `<div class="ai-bot-row">
+        <div class="ai-bot-id">
+          <strong>${esc(b.name || "未命名")}</strong>
+          ${b.username ? `<span class="muted">@${esc(b.username)}</span>` : ""}
+        </div>
+        <div class="ai-bot-agent">
+          ${agentName ? `<span>${esc(agentName)}</span>${agentModel ? `<span class="muted mono">${esc(agentModel)}</span>` : ""}` : `<span class="muted">未绑定智能体</span>`}
+        </div>
+        <div class="ai-bot-state">${state}${replyText}</div>
+      </div>`;
+    }).join("");
   }
 
   function renderGroups(data) {

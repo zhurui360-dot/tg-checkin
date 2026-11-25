@@ -786,8 +786,29 @@ td.wrap { max-width: 440px; word-break: break-word; white-space: pre-wrap; }
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
 }
 
-.account-box { display: grid; gap: 14px; }
-.filter-bar { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; }
+/* 概览页的 AI 机器人卡片 */
+.ai-bot-list { display: grid; gap: 8px; }
+.ai-bot-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.2fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 11px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+.ai-bot-row:hover { border-color: var(--line-strong); }
+.ai-bot-id { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ai-bot-id strong { font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ai-bot-id .muted { white-space: nowrap; }
+.ai-bot-agent { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ai-bot-agent > span:first-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ai-bot-agent .mono { font-size: 11.5px; }
+.ai-bot-state { display: flex; align-items: center; gap: 10px; justify-content: flex-end; }
+.ai-bot-replies { color: var(--text-3); font-size: 11.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.account-box { display: grid; gap: 14px; }.filter-bar { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; }
 .filter-bar select {
   border: 1px solid var(--line-strong);
   border-radius: var(--r-sm);
@@ -1101,6 +1122,12 @@ td.wrap { max-width: 440px; word-break: break-word; white-space: pre-wrap; }
   .memory-text { flex: 1 1 100%; }
   .memory-key { max-width: 100%; }
   .preview-cell { max-width: 140px; }
+  /* 概览页机器人卡片：窄屏改成上下堆叠，状态和回复数换到右上角 */
+  .ai-bot-row { grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; padding: 10px 12px; }
+  .ai-bot-id { grid-column: 1; grid-row: 1; }
+  .ai-bot-agent { grid-column: 1 / -1; grid-row: 2; }
+  .ai-bot-state { grid-column: 2; grid-row: 1; }
+  .ai-bot-replies { display: none; }
 }
 
 @media (max-width: 420px) {
