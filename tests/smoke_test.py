@@ -605,6 +605,92 @@ with TestClient(app) as client:
     webdav_masked = client.get("/api/bootstrap").json()["settings"]["webdav_password"]
     assert "secret123" not in webdav_masked, webdav_masked
 
+    # ---------- GitHub 备份必须脱敏：凭据一个字节都不能上去 ----------
+    import json as _json
+
+    from app import backup as _backup
+
+    sample = {
+        "app": "tg-checkin",
+        "format": _backup.FORMAT_VERSION,
+        "settings": {
+            "panel_password": "pw-LEAK-1",
+            "panel_secret": "secret-LEAK-2",
+            "github_token": "ghp-LEAK-3",
+            "webdav_password": "dav-LEAK-4",
+            "bot_token": "bot-LEAK-5",
+            "ai_api_key": "sk-LEAK-6",
+            "api_hash": "hash-LEAK-7",
+            "session_string": "sess-LEAK-8",
+            "phone": "+8613800138000",
+            "business_connections": '{"x":{"owner_id":123,"owner_username":"me"}}',
+            # 下面两个必须原样保留：不是凭据，而且 fail_keywords 名字里带 key 容易被误杀
+            "ai_model": "keep-me",
+            "fail_keywords": "签到失败",
+        },
+        "groups": [{"id": 1, "chat": "@g", "title": "测试群"}],
+        "accounts": [
+            {
+                "id": 1,
+                "phone": "+8613800138000",
+                "api_id": "123",
+                "api_hash": "hash-LEAK-7",
+                "session_string": "sess-LEAK-8",
+                "proxy_url": "socks5://user:pass@host:1080",
+            }
+        ],
+        "bots": [{"id": 1, "token": "bot-LEAK-5"}],
+        "logs": [{"id": 1, "message": "聊天记录-LEAK-9"}],
+    }
+
+    red = _backup.redact_bundle(sample)
+    blob = _json.dumps(red, ensure_ascii=False)
+    for leak in (
+        "LEAK-1",
+        "LEAK-2",
+        "LEAK-3",
+        "LEAK-4",
+        "LEAK-5",
+        "LEAK-6",
+        "LEAK-7",
+        "LEAK-8",
+        "LEAK-9",
+        "13800138000",
+        "socks5://",
+        "owner_username",
+    ):
+        assert leak not in blob, f"脱敏后仍残留敏感内容：{leak}"
+
+    assert red["redacted"] is True
+    assert red["logs"] == [], "聊天记录不该传到 GitHub"
+    assert red["settings"]["ai_model"] == "keep-me"
+    assert red["settings"]["fail_keywords"] == "签到失败", "fail_keywords 含 key 字样但不是密钥，不能被误删"
+    assert red["groups"][0]["title"] == "测试群", "结构信息要保留，否则备份没意义"
+    assert all(not str(a.get("session_string") or "") for a in red["accounts"])
+    assert all(not str(b.get("token") or "") for b in red["bots"])
+    # 入参不能被就地改掉
+    assert sample["settings"]["panel_password"] == "pw-LEAK-1"
+    assert sample["accounts"][0]["session_string"] == "sess-LEAK-8"
+
+    # 从脱敏包恢复时，空凭据不能把本地真实值覆盖成空
+    from app import db as _db2
+
+    real_pw = _db2.get_setting("panel_password")
+    _db2.set_setting("ai_api_key", "real-key-must-survive")
+    _backup.restore_bundle(
+        {
+            "app": "tg-checkin",
+            "settings": {"ai_api_key": "", "panel_password": "", "panel_secret": ""},
+            "groups": [],
+            "accounts": [],
+            "bots": [],
+        },
+        mode="merge",
+        restore_password=True,
+    )
+    assert _db2.get_setting("ai_api_key") == "real-key-must-survive", "脱敏空值把真实 key 清空了"
+    assert _db2.get_setting("panel_password") == real_pw, "脱敏空值把面板密码清空了"
+
     # ---------- WebDAV：设了文件夹就自动建出来 ----------
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer

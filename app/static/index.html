@@ -334,6 +334,10 @@
             <span class="muted" id="githubState">未配置</span>
           </div>
           <p class="muted" style="margin:0 0 14px">每次备份作为一次 commit 推到仓库，天然带版本历史，还能拿 GitHub 当免费的对象存储。建议用一个私有仓库专门放备份。</p>
+          <div class="notice warn" style="margin-bottom:14px">
+            <strong>GitHub 上的备份是脱敏的</strong>
+            <p>上传前会自动抹掉面板密码、各种 Token、api_hash、session_string、手机号和 Business 授权，聊天记录也不传。所以这里只能存「结构快照」，<b>不能拿它完整恢复登录态</b>——真要迁移或恢复，用 WebDAV 或本地下载的那份。想完全不上传，把下面的「自动同步」设成关闭即可。</p>
+          </div>
           <p class="muted" style="margin:0 0 14px">
             没有 Token？
             <a id="githubTokenLink" href="https://github.com/settings/personal-access-tokens/new?name=tg-checkin-backup&amp;description=tg-checkin%20%E8%87%AA%E5%8A%A8%E5%A4%87%E4%BB%BD&amp;expires_in=90&amp;contents=write" target="_blank" rel="noopener noreferrer">点这里一键生成</a>

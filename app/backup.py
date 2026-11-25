@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import json
 import logging
 import os
@@ -50,6 +51,65 @@ class BackupError(RuntimeError):
 
 def _stamp() -> str:
     return datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+# 绝对不能出现在 GitHub 上的设置项：明文密码、密钥、登录会话、身份信息
+SECRET_SETTINGS: frozenset[str] = frozenset({
+    "panel_password",
+    "panel_secret",
+    "github_token",
+    "webdav_password",
+    "bot_token",
+    "ai_api_key",
+    "api_hash",
+    "session_string",
+    "phone",
+    "business_connections",
+})
+
+# 后缀兜底：以后新增的键哪怕忘了登记，只要叫得上号也不会漏出去
+_SECRET_SUFFIXES = ("_password", "_token", "_secret", "_api_key", "_api_hash", "_session")
+
+
+def _is_secret_setting(key: str) -> bool:
+    low = str(key).lower()
+    return low in SECRET_SETTINGS or low.endswith(_SECRET_SUFFIXES)
+
+
+def redact_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
+    """把备份里的凭据和个人信息抹掉，只留结构。
+
+    GitHub 是代码托管平台，仓库一旦误设成公开，等于把账号连同二次验证一起送人。
+    所以往 GitHub 传之前必须过这一道：密码、Token、session_string、api_hash、
+    手机号、Business 授权全部清空，聊天记录也不传。
+    这份脱敏包只能看结构和迁移配置，不能用来完整恢复登录态。
+    """
+    out = copy.deepcopy(bundle)
+    out.pop("logs", None)
+    out["logs"] = []
+
+    settings = out.get("settings")
+    if isinstance(settings, dict):
+        for key in list(settings):
+            if _is_secret_setting(key):
+                settings[key] = ""
+
+    for item in out.get("accounts") or []:
+        if not isinstance(item, dict):
+            continue
+        item["session_string"] = ""
+        item["api_hash"] = ""
+        item["proxy_url"] = ""
+        phone = str(item.get("phone") or "")
+        if len(phone) > 6:
+            item["phone"] = f"{phone[:3]}****{phone[-2:]}"
+
+    for item in out.get("bots") or []:
+        if isinstance(item, dict):
+            item["token"] = ""
+
+    out["redacted"] = True
+    return out
 
 
 def build_bundle(include_logs: bool = True) -> dict[str, Any]:
@@ -91,6 +151,10 @@ def restore_bundle(
     restored_settings = 0
     current = db.get_settings()
     for key, value in settings.items():
+        # 从 GitHub 恢复时拿到的是脱敏包，敏感键都是空值。
+        # 空值绝不能写回本地，否则会把面板密码、账号会话直接清成空，人就登不进来了。
+        if _is_secret_setting(key) and not str(value or "").strip():
+            continue
         if key in ("panel_password",) and not restore_password:
             continue
         if mode == "merge" and str(current.get(key, "")).strip():
@@ -890,12 +954,14 @@ def _github_put(conf: dict[str, str], path: str, text: str, message: str) -> Non
 
 def github_upload(bundle: dict[str, Any] | None = None) -> dict[str, Any]:
     conf = _github_conf()
-    bundle = bundle or build_bundle()
+    # 无论调用方传什么进来，往 GitHub 写之前一律先脱敏。
+    # GitHub 只允许存「结构快照」，密码、Token、session_string 一个字节都不上去。
+    bundle = redact_bundle(bundle or build_bundle(include_logs=False))
     name = f"tgck-{_stamp()}.json"
     text = json.dumps(bundle, ensure_ascii=False, indent=2)
-    _github_put(conf, f"{conf['path']}/{name}", text, f"backup: {name}")
+    _github_put(conf, f"{conf['path']}/{name}", text, f"backup: {name} (redacted)")
     prune_github()
-    return {"ok": True, "name": name, "size": len(text.encode("utf-8"))}
+    return {"ok": True, "name": name, "size": len(text.encode("utf-8")), "redacted": True}
 
 
 def github_download(name: str) -> dict[str, Any]:
@@ -1073,6 +1139,13 @@ def auto_restore_on_boot() -> None:
         name = str(files[0]["name"])
         try:
             bundle = webdav_download(name) if kind == "webdav" else github_download(name)
+            if isinstance(bundle, dict) and bundle.get("redacted"):
+                log.warning(
+                    "注意：从 %s 恢复的是脱敏备份（%s），密码和登录会话没在里面，"
+                    "账号需要重新登录，面板密码保持原样不会变。",
+                    label,
+                    name,
+                )
             result = restore_bundle(bundle, mode="replace", restore_password=True)
             log.info("已从 %s 的 %s 自动恢复：%s", label, name, result)
             return
