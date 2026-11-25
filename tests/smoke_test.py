@@ -786,6 +786,10 @@ with TestClient(app) as client:
     # ---------------- 智能体长期记忆 ----------------
     from app import memory as _mem
 
+    # 上面的改密码用例把会话签名换掉了，这里重新登录一次
+    client.cookies.clear()
+    assert client.post("/api/panel/login", json={"password": "admin123"}).status_code == 200
+
     agent_id = client.get("/api/ai/agents").json()["default_id"]
     assert agent_id, "应当有默认智能体"
 
