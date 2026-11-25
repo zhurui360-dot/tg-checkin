@@ -97,6 +97,28 @@ a { color: var(--primary); text-decoration: none; }
 .card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
 .card-head h3 { margin: 0; font-size: 15px; }
 .link-btn { border: 0; background: transparent; color: var(--primary); cursor: pointer; font-size: 12px; }
+/* 可折叠卡片：设置页的备份区域用它收起来，标题栏始终显示状态摘要，不必点开就知道有没有在跑 */
+.card.fold { padding: 0; overflow: hidden; }
+.card.fold > summary.card-head {
+  margin: 0; padding: 18px 20px; cursor: pointer;
+  list-style: none; user-select: none; transition: background .15s;
+}
+.card.fold > summary::-webkit-details-marker { display: none; }
+.card.fold > summary:hover { background: #f8fafc; }
+.card.fold > summary:focus-visible { outline: 2px solid var(--primary); outline-offset: -3px; }
+.card.fold[open] > summary { border-bottom: 1px solid var(--border); }
+.fold-body { padding: 18px 20px 20px; }
+.fold-aside { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.fold-hint { font-size: 12px; color: var(--muted); white-space: nowrap; transition: color .15s; }
+.card.fold > summary:hover .fold-hint { color: var(--primary); }
+.fold-hint::after { content: "展开"; }
+.card.fold[open] .fold-hint::after { content: "收起"; }
+.fold-chev {
+  flex: 0 0 auto; width: 7px; height: 7px;
+  border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted);
+  transform: rotate(45deg) translate(-1px, -1px); transition: transform .18s;
+}
+.card.fold[open] .fold-chev { transform: rotate(-135deg) translate(-1px, -1px); }
 .two-col { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 18px; }
 .two-col > * { min-width: 0; }
 
@@ -280,6 +302,10 @@ td.wrap { max-width: 460px; word-break: break-word; white-space: pre-wrap; }
   .span-2 { grid-column: 1; }
   .card { padding: 14px; border-radius: 12px; }
   .card-head { flex-wrap: wrap; gap: 6px; }
+  .card.fold > summary.card-head { padding: 14px; }
+  .fold-body { padding: 14px; }
+  .fold-aside { gap: 8px; }
+  .fold-hint { display: none; }
   /* 16px 以下 iOS 会在聚焦时自动放大页面 */
   input, select, textarea { font-size: 16px; }
   .btn { min-height: 40px; }

@@ -237,145 +237,163 @@
           <p>cron 为 5 段格式：分 时 日 月 周。随机延迟会在每次发送前增加 0 到设定值之间的等待，降低固定时间点的机械特征。模拟运行适合先验证连接和群组是否正确。</p>
         </div>
 
-        <div class="card">
-          <div class="card-head">
+        <details class="card fold" id="foldBackup">
+          <summary class="card-head">
             <h3>备份与恢复</h3>
-            <span class="muted" id="backupSummary">加载中…</span>
-          </div>
-          <div class="notice">
-            <strong>备份文件里有什么</strong>
-            <p>一份 JSON：群组、账号、机器人、全部设置，以及 Telegram 登录会话。把它当密码一样保管。恢复时账号和机器人会重新生成编号，群组里的「用哪个账号 / 哪个机器人」会自动对上，不会指错人。</p>
-          </div>
-          <form id="backupForm" class="form-grid" style="margin-top:14px">
-            <label class="field"><span>自动备份</span>
-              <select name="backup_auto"><option value="1">开启</option><option value="0">关闭</option></select>
-            </label>
-            <label class="field"><span>备份间隔（小时，1-168）</span>
-              <input name="backup_interval" type="number" min="1" max="168" value="12">
-            </label>
-            <label class="field"><span>本地保留份数（1-200）</span>
-              <input name="backup_keep" type="number" min="1" max="200" value="14">
-            </label>
-            <label class="field"><span>启动时自动恢复</span>
-              <select name="backup_restore_on_boot">
-                <option value="1">开启（容器重建后自动拉回数据）</option>
-                <option value="0">关闭</option>
-              </select>
-            </label>
-            <div class="span-2 form-actions">
-              <button type="submit" class="btn primary">保存备份设置</button>
-              <button type="button" class="btn" id="backupRunBtn">立即备份一次</button>
-              <button type="button" class="btn" id="backupExportBtn">下载备份文件</button>
-              <button type="button" class="btn" id="backupUploadBtn">从文件恢复…</button>
-              <input id="backupFile" type="file" accept="application/json,.json" hidden>
+            <span class="fold-aside">
+              <span class="muted" id="backupSummary">加载中…</span>
+              <span class="fold-hint" aria-hidden="true"></span>
+              <span class="fold-chev" aria-hidden="true"></span>
+            </span>
+          </summary>
+          <div class="fold-body">
+            <div class="notice">
+              <strong>备份文件里有什么</strong>
+              <p>一份 JSON：群组、账号、机器人、全部设置，以及 Telegram 登录会话。把它当密码一样保管。恢复时账号和机器人会重新生成编号，群组里的「用哪个账号 / 哪个机器人」会自动对上，不会指错人。</p>
             </div>
-            <label class="field"><span>恢复方式</span>
-              <select name="restore_mode">
-                <option value="replace">替换（先清空再导入，迁移用这个）</option>
-                <option value="merge">合并（只补缺失，按手机号/Token/群组去重）</option>
-              </select>
-            </label>
-            <label class="field"><span>面板密码</span>
-              <select name="restore_password">
-                <option value="0">保留当前密码</option>
-                <option value="1">恢复成备份里的密码</option>
-              </select>
-            </label>
-          </form>
-          <p id="backupStatusText" class="muted" style="margin:14px 0 0">加载中…</p>
-          <div class="table-wrap" style="margin-top:12px">
-            <table>
-              <thead><tr><th>本地备份</th><th>大小</th><th>时间</th><th>操作</th></tr></thead>
-              <tbody id="backupLocalBody"></tbody>
-            </table>
+            <form id="backupForm" class="form-grid" style="margin-top:14px">
+              <label class="field"><span>自动备份</span>
+                <select name="backup_auto"><option value="1">开启</option><option value="0">关闭</option></select>
+              </label>
+              <label class="field"><span>备份间隔（小时，1-168）</span>
+                <input name="backup_interval" type="number" min="1" max="168" value="12">
+              </label>
+              <label class="field"><span>本地保留份数（1-200）</span>
+                <input name="backup_keep" type="number" min="1" max="200" value="14">
+              </label>
+              <label class="field"><span>启动时自动恢复</span>
+                <select name="backup_restore_on_boot">
+                  <option value="1">开启（容器重建后自动拉回数据）</option>
+                  <option value="0">关闭</option>
+                </select>
+              </label>
+              <div class="span-2 form-actions">
+                <button type="submit" class="btn primary">保存备份设置</button>
+                <button type="button" class="btn" id="backupRunBtn">立即备份一次</button>
+                <button type="button" class="btn" id="backupExportBtn">下载备份文件</button>
+                <button type="button" class="btn" id="backupUploadBtn">从文件恢复…</button>
+                <input id="backupFile" type="file" accept="application/json,.json" hidden>
+              </div>
+              <label class="field"><span>恢复方式</span>
+                <select name="restore_mode">
+                  <option value="replace">替换（先清空再导入，迁移用这个）</option>
+                  <option value="merge">合并（只补缺失，按手机号/Token/群组去重）</option>
+                </select>
+              </label>
+              <label class="field"><span>面板密码</span>
+                <select name="restore_password">
+                  <option value="0">保留当前密码</option>
+                  <option value="1">恢复成备份里的密码</option>
+                </select>
+              </label>
+            </form>
+            <p id="backupStatusText" class="muted" style="margin:14px 0 0">加载中…</p>
+            <div class="table-wrap" style="margin-top:12px">
+              <table>
+                <thead><tr><th>本地备份</th><th>大小</th><th>时间</th><th>操作</th></tr></thead>
+                <tbody id="backupLocalBody"></tbody>
+              </table>
+            </div>
           </div>
-        </div>
+        </details>
 
-        <div class="card">
-          <div class="card-head">
+        <details class="card fold" id="foldWebdav">
+          <summary class="card-head">
             <h3>WebDAV 云备份</h3>
-            <span class="muted" id="webdavState">未配置</span>
-          </div>
-          <p class="muted" style="margin:0 0 14px">坚果云、Nextcloud、群晖、InfiniCLOUD 都行。地址填到目录为止；再填一个文件夹名，程序会自动在云端建好这个子文件夹，备份都放里面。</p>
-          <form id="webdavForm" class="form-grid">
-            <label class="field span-2"><span>WebDAV 地址</span>
-              <input name="webdav_url" placeholder="https://dav.jianguoyun.com/dav/">
-            </label>
-            <label class="field"><span>用户名</span><input name="webdav_username" placeholder="通常是邮箱"></label>
-            <label class="field"><span>密码 / 应用密码</span><input name="webdav_password" type="password" placeholder="留空表示不修改"></label>
-            <label class="field span-2"><span>备份文件夹（可选）</span>
-              <input name="webdav_dir" placeholder="tg-checkin">
-              <small class="muted">留空就用上面的地址本身；填 <code>tg-checkin</code> 会自动创建该文件夹，也支持 <code>backup/tgck</code> 这种多级目录。</small>
-            </label>
-            <label class="field"><span>自动上传</span>
-              <select name="webdav_auto"><option value="1">开启（跟随自动备份）</option><option value="0">关闭</option></select>
-            </label>
-            <label class="field"><span>云端保留份数（1-200）</span>
-              <input name="webdav_keep" type="number" min="1" max="200" value="14">
-            </label>
-            <div class="span-2 form-actions">
-              <button type="submit" class="btn primary">保存 WebDAV 设置</button>
-              <button type="button" class="btn" id="webdavTestBtn">测试连接</button>
-              <button type="button" class="btn" id="webdavUploadBtn">立即上传</button>
-              <button type="button" class="btn ghost" id="webdavListBtn">刷新云端列表</button>
+            <span class="fold-aside">
+              <span class="muted" id="webdavState">未配置</span>
+              <span class="fold-hint" aria-hidden="true"></span>
+              <span class="fold-chev" aria-hidden="true"></span>
+            </span>
+          </summary>
+          <div class="fold-body">
+            <p class="muted" style="margin:0 0 14px">坚果云、Nextcloud、群晖、InfiniCLOUD 都行。地址填到目录为止；再填一个文件夹名，程序会自动在云端建好这个子文件夹，备份都放里面。</p>
+            <form id="webdavForm" class="form-grid">
+              <label class="field span-2"><span>WebDAV 地址</span>
+                <input name="webdav_url" placeholder="https://dav.jianguoyun.com/dav/">
+              </label>
+              <label class="field"><span>用户名</span><input name="webdav_username" placeholder="通常是邮箱"></label>
+              <label class="field"><span>密码 / 应用密码</span><input name="webdav_password" type="password" placeholder="留空表示不修改"></label>
+              <label class="field span-2"><span>备份文件夹（可选）</span>
+                <input name="webdav_dir" placeholder="tg-checkin">
+                <small class="muted">留空就用上面的地址本身；填 <code>tg-checkin</code> 会自动创建该文件夹，也支持 <code>backup/tgck</code> 这种多级目录。</small>
+              </label>
+              <label class="field"><span>自动上传</span>
+                <select name="webdav_auto"><option value="1">开启（跟随自动备份）</option><option value="0">关闭</option></select>
+              </label>
+              <label class="field"><span>云端保留份数（1-200）</span>
+                <input name="webdav_keep" type="number" min="1" max="200" value="14">
+              </label>
+              <div class="span-2 form-actions">
+                <button type="submit" class="btn primary">保存 WebDAV 设置</button>
+                <button type="button" class="btn" id="webdavTestBtn">测试连接</button>
+                <button type="button" class="btn" id="webdavUploadBtn">立即上传</button>
+                <button type="button" class="btn ghost" id="webdavListBtn">刷新云端列表</button>
+              </div>
+            </form>
+            <div class="table-wrap" style="margin-top:12px">
+              <table>
+                <thead><tr><th>云端备份</th><th>操作</th></tr></thead>
+                <tbody id="webdavBody"></tbody>
+              </table>
             </div>
-          </form>
-          <div class="table-wrap" style="margin-top:12px">
-            <table>
-              <thead><tr><th>云端备份</th><th>操作</th></tr></thead>
-              <tbody id="webdavBody"></tbody>
-            </table>
           </div>
-        </div>
+        </details>
 
-        <div class="card">
-          <div class="card-head">
+        <details class="card fold" id="foldGithub">
+          <summary class="card-head">
             <h3>GitHub 同步</h3>
-            <span class="muted" id="githubState">未配置</span>
-          </div>
-          <p class="muted" style="margin:0 0 14px">每次备份作为一次 commit 推到仓库，天然带版本历史，还能拿 GitHub 当免费的对象存储。建议用一个私有仓库专门放备份。</p>
-          <div class="notice warn" style="margin-bottom:14px">
-            <strong>GitHub 上的备份是脱敏的</strong>
-            <p>上传前会自动抹掉面板密码、各种 Token、api_hash、session_string、手机号和 Business 授权，聊天记录也不传。所以这里只能存「结构快照」，<b>不能拿它完整恢复登录态</b>——真要迁移或恢复，用 WebDAV 或本地下载的那份。想完全不上传，把下面的「自动同步」设成关闭即可。</p>
-          </div>
-          <p class="muted" style="margin:0 0 14px">
-            没有 Token？
-            <a id="githubTokenLink" href="https://github.com/settings/personal-access-tokens/new?name=tg-checkin-backup&amp;description=tg-checkin%20%E8%87%AA%E5%8A%A8%E5%A4%87%E4%BB%BD&amp;expires_in=90&amp;contents=write" target="_blank" rel="noopener noreferrer">点这里一键生成</a>
-            —— 名称、有效期（90 天）和权限（Contents: Read and write）都已在链接里预填，打开后只需在「Repository access」选 <b>Only select repositories</b> 勾上备份仓库，再点 <b>Generate token</b> 复制回来。
-          </p>
-          <p class="muted" style="margin:0 0 14px">
-            提示：GitHub 对「仓库不存在」和「Token 没权限」都回同一句 404。点「测试连接」时，程序会用你的 Token 反查它实际能访问哪些仓库，直接告诉你仓库名该怎么写、或者是不是 Repository access 没勾上。
-          </p>
-          <form id="githubForm" class="form-grid">
-            <label class="field span-2"><span>Personal Access Token（Fine-grained，Contents 读写）</span>
-              <input name="github_token" type="password" placeholder="github_pat_... 留空表示不修改">
-            </label>
-            <label class="field"><span>仓库</span>
-              <input name="github_repo" placeholder="yourname/tg-checkin-data">
-              <small class="muted">也可以直接粘 <code>https://github.com/yourname/tg-checkin-data</code></small>
-            </label>
-            <label class="field"><span>分支</span><input name="github_branch" placeholder="main"></label>
-            <label class="field"><span>存放目录</span><input name="github_path" placeholder="tgck-backups"></label>
-            <label class="field"><span>自动同步</span>
-              <select name="github_auto"><option value="1">开启（跟随自动备份）</option><option value="0">关闭</option></select>
-            </label>
-            <label class="field"><span>保留份数（1-200）</span>
-              <input name="github_keep" type="number" min="1" max="200" value="14">
-            </label>
-            <div class="span-2 form-actions">
-              <button type="submit" class="btn primary">保存 GitHub 设置</button>
-              <button type="button" class="btn" id="githubTestBtn">测试连接</button>
-              <button type="button" class="btn" id="githubUploadBtn">立即同步</button>
-              <button type="button" class="btn ghost" id="githubListBtn">刷新云端列表</button>
+            <span class="fold-aside">
+              <span class="muted" id="githubState">未配置</span>
+              <span class="fold-hint" aria-hidden="true"></span>
+              <span class="fold-chev" aria-hidden="true"></span>
+            </span>
+          </summary>
+          <div class="fold-body">
+            <p class="muted" style="margin:0 0 14px">每次备份作为一次 commit 推到仓库，天然带版本历史，还能拿 GitHub 当免费的对象存储。建议用一个私有仓库专门放备份。</p>
+            <div class="notice warn" style="margin-bottom:14px">
+              <strong>GitHub 上的备份是脱敏的</strong>
+              <p>上传前会自动抹掉面板密码、各种 Token、api_hash、session_string、手机号和 Business 授权，聊天记录也不传。所以这里只能存「结构快照」，<b>不能拿它完整恢复登录态</b>——真要迁移或恢复，用 WebDAV 或本地下载的那份。想完全不上传，把下面的「自动同步」设成关闭即可。</p>
             </div>
-          </form>
-          <div class="table-wrap" style="margin-top:12px">
-            <table>
-              <thead><tr><th>云端备份</th><th>操作</th></tr></thead>
-              <tbody id="githubBody"></tbody>
-            </table>
+            <p class="muted" style="margin:0 0 14px">
+              没有 Token？
+              <a id="githubTokenLink" href="https://github.com/settings/personal-access-tokens/new?name=tg-checkin-backup&amp;description=tg-checkin%20%E8%87%AA%E5%8A%A8%E5%A4%87%E4%BB%BD&amp;expires_in=90&amp;contents=write" target="_blank" rel="noopener noreferrer">点这里一键生成</a>
+              —— 名称、有效期（90 天）和权限（Contents: Read and write）都已在链接里预填，打开后只需在「Repository access」选 <b>Only select repositories</b> 勾上备份仓库，再点 <b>Generate token</b> 复制回来。
+            </p>
+            <p class="muted" style="margin:0 0 14px">
+              提示：GitHub 对「仓库不存在」和「Token 没权限」都回同一句 404。点「测试连接」时，程序会用你的 Token 反查它实际能访问哪些仓库，直接告诉你仓库名该怎么写、或者是不是 Repository access 没勾上。
+            </p>
+            <form id="githubForm" class="form-grid">
+              <label class="field span-2"><span>Personal Access Token（Fine-grained，Contents 读写）</span>
+                <input name="github_token" type="password" placeholder="github_pat_... 留空表示不修改">
+              </label>
+              <label class="field"><span>仓库</span>
+                <input name="github_repo" placeholder="yourname/tg-checkin-data">
+                <small class="muted">也可以直接粘 <code>https://github.com/yourname/tg-checkin-data</code></small>
+              </label>
+              <label class="field"><span>分支</span><input name="github_branch" placeholder="main"></label>
+              <label class="field"><span>存放目录</span><input name="github_path" placeholder="tgck-backups"></label>
+              <label class="field"><span>自动同步</span>
+                <select name="github_auto"><option value="1">开启（跟随自动备份）</option><option value="0">关闭</option></select>
+              </label>
+              <label class="field"><span>保留份数（1-200）</span>
+                <input name="github_keep" type="number" min="1" max="200" value="14">
+              </label>
+              <div class="span-2 form-actions">
+                <button type="submit" class="btn primary">保存 GitHub 设置</button>
+                <button type="button" class="btn" id="githubTestBtn">测试连接</button>
+                <button type="button" class="btn" id="githubUploadBtn">立即同步</button>
+                <button type="button" class="btn ghost" id="githubListBtn">刷新云端列表</button>
+              </div>
+            </form>
+            <div class="table-wrap" style="margin-top:12px">
+              <table>
+                <thead><tr><th>云端备份</th><th>操作</th></tr></thead>
+                <tbody id="githubBody"></tbody>
+              </table>
+            </div>
           </div>
-        </div>
+        </details>
 
         <div class="card" id="aboutCard">
           <div class="card-head"><h3>项目地址</h3><span class="muted">教程、更新日志与问题反馈都在这里</span></div>

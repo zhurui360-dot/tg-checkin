@@ -1357,6 +1357,20 @@
       btn.addEventListener("click", () => switchTab(btn.dataset.goto));
     });
 
+    // 折叠卡片：默认收起，展开状态记在本地，下次进来保持原样
+    document.querySelectorAll("details.card.fold").forEach((el) => {
+      if (!el.id) return;
+      const key = `fold:${el.id}`;
+      try {
+        if (localStorage.getItem(key) === "1") el.open = true;
+      } catch (_) { /* 隐私模式下读不到，保持默认收起 */ }
+      el.addEventListener("toggle", () => {
+        try {
+          localStorage.setItem(key, el.open ? "1" : "0");
+        } catch (_) { /* 写不进去就算了 */ }
+      });
+    });
+
     $("refreshBtn").addEventListener("click", loadBootstrap);
     $("quickRefresh").addEventListener("click", loadBootstrap);
     $("quickAccount").addEventListener("click", () => switchTab("account"));
