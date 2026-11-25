@@ -738,7 +738,7 @@ def _agent_payload(body: dict[str, Any], current: dict[str, Any] | None = None) 
     name = str(body.get("name", "")).strip()
     if not name:
         raise HTTPException(status_code=400, detail="给智能体起个名字，方便区分")
-    base_url = str(body.get("base_url", "")).strip().rstrip("/")
+    base_url = bot.normalize_base(str(body.get("base_url", "")))
     if not base_url:
         raise HTTPException(status_code=400, detail="请填写接口地址（例如 https://api.deepseek.com/v1）")
     if not base_url.startswith(("http://", "https://")):
@@ -1181,6 +1181,32 @@ def restart_bot(bot_id: int, _: None = Depends(require_auth)) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="机器人不存在")
     bot.restart(bot_id)
     return bot.bot_detail(bot_id)
+
+
+@app.post("/api/bots/{bot_id}/toggle")
+def toggle_bot(
+    bot_id: int, body: dict[str, Any] | None = None, _: None = Depends(require_auth)
+) -> dict[str, Any]:
+    """一键停用 / 启用：只动 enabled，不碰 token、群组绑定这些配置。
+
+    不传 body 就是「取反」，传 {"enabled": true/false} 则设成指定值。
+    """
+    record = db.get_bot(bot_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="机器人不存在")
+    wanted = (body or {}).get("enabled")
+    target = bool(wanted) if wanted is not None else not bool(record.get("enabled"))
+    db.update_bot(bot_id, {"enabled": target})
+    if STANDBY:
+        # 值守模式本来就不跑后台任务，只落库
+        pass
+    elif target:
+        bot.start(bot_id)
+    else:
+        bot.stop(bot_id)
+    detail = bot.bot_detail(bot_id)
+    detail["ok"] = True
+    return detail
 
 
 # ---------------- 多账号：扫码 / 验证码登录（按账号） ----------------

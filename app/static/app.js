@@ -17,6 +17,8 @@
     modelChoices: [],
     pickedModels: new Set(),
     modelProbeKey: "",
+    modelFilter: "",
+    modelLimit: 60,
     memoryAgentId: null,
     memoryFilled: false,
     settingsFilled: false,
@@ -62,6 +64,29 @@
     toastTimer = setTimeout(() => el.classList.add("hidden"), duration || (kind === "err" ? 7000 : 4200));
   }
 
+  // FastAPI 的 detail 可能是字符串，也可能是 [{loc, msg}] 数组，
+  // 直接拼进 Error 会变成「[object Object]」，用户完全看不懂错在哪。
+  function errorText(payload, status) {
+    const detail = payload && payload.detail;
+    if (typeof detail === "string" && detail.trim()) return detail;
+    if (Array.isArray(detail)) {
+      const parts = detail.map((item) => {
+        if (typeof item === "string") return item;
+        if (item && typeof item === "object") {
+          const loc = Array.isArray(item.loc)
+            ? item.loc.filter((x) => x !== "body" && x !== "query").join(".")
+            : "";
+          const msg = item.msg || "";
+          return [loc, msg].filter(Boolean).join("：") || JSON.stringify(item);
+        }
+        return String(item);
+      }).filter(Boolean);
+      if (parts.length) return parts.join("；");
+    }
+    if (detail && typeof detail === "object") return JSON.stringify(detail).slice(0, 300);
+    return `请求失败（${status}）`;
+  }
+
   async function api(path, options = {}) {
     const opts = { method: options.method || "GET", headers: {}, ...options };
     if (options.body !== undefined) {
@@ -81,7 +106,7 @@
     let payload = {};
     try { payload = await response.json(); } catch (_) { /* ignore */ }
     if (!response.ok) {
-      throw new Error(payload.detail || `请求失败（${response.status}）`);
+      throw new Error(errorText(payload, response.status));
     }
     return payload;
   }
@@ -371,7 +396,10 @@
         <td>${esc(TRIGGER_TEXT[b.trigger] || b.trigger || "-")}</td>
         <td>${poll}</td>
         <td>${detail.replies != null ? detail.replies : (b.replies || 0)}</td>
-        <td>${b.enabled ? `<span class="badge ok">启用</span>` : `<span class="badge">关闭</span>`}</td>
+        <td><button type="button" class="toggle${b.enabled ? " on" : ""}" data-action="toggle" data-id="${b.id}"
+          title="${b.enabled ? "点击停用（只停回复，配置都留着）" : "点击启用"}">
+          <span class="knob"></span><em>${b.enabled ? "已启用" : "已停用"}</em>
+        </button></td>
         <td><div class="row-actions">
           <button class="btn small" data-action="verify" data-id="${b.id}">验证</button>
           <button class="btn small" data-action="restart" data-id="${b.id}">重启</button>
@@ -489,24 +517,49 @@
   }
 
   const MODEL_HINT = "填好接口地址和 Key 会自动去读这家接口的模型列表；想在同一家接口上用多个模型，勾选多个就行，保存时会一个模型建一个智能体。";
+  const MODEL_FILTER_MIN = 24;   // 超过这么多才显示筛选框，免得少数模型时多一行
+  const MODEL_PAGE = 60;         // 一次最多渲染多少个 chip，OpenRouter 有四百多个
+
+  function filteredModels() {
+    const keyword = (state.modelFilter || "").trim().toLowerCase();
+    if (!keyword) return state.modelChoices;
+    return state.modelChoices.filter((m) => m.toLowerCase().includes(keyword));
+  }
 
   function renderModelChips() {
     const box = $("agentModelChips");
     const input = $("agentModelInput");
     const hint = $("agentModelHint");
+    const filter = $("agentModelFilter");
+    const moreWrap = $("agentModelMoreWrap");
+    const moreBtn = $("agentModelMore");
     if (!box || !input) return;
     const picked = state.pickedModels;
     if (!state.modelChoices.length) {
       box.classList.add("hidden");
       box.innerHTML = "";
+      if (filter) filter.classList.add("hidden");
+      if (moreWrap) moreWrap.classList.add("hidden");
       input.disabled = false;
       return;
     }
+    const matches = filteredModels();
+    const limit = state.modelLimit || MODEL_PAGE;
+    const visible = matches.slice(0, limit);
+
     box.classList.remove("hidden");
-    box.innerHTML = state.modelChoices.map((model, idx) => {
+    box.innerHTML = visible.map((model) => {
       const on = picked.has(model) ? " picked" : "";
-      return `<button type="button" class="chip${on}" data-idx="${idx}" title="${esc(model)}">${esc(model)}</button>`;
-    }).join("");
+      return `<button type="button" class="chip${on}" data-model="${esc(model)}" title="${esc(model)}">${esc(model)}</button>`;
+    }).join("") || `<span class="muted">没有匹配「${esc(state.modelFilter || "")}」的模型，可以清空筛选或直接手填</span>`;
+
+    if (filter) filter.classList.toggle("hidden", state.modelChoices.length <= MODEL_FILTER_MIN);
+    if (moreWrap && moreBtn) {
+      const rest = matches.length - visible.length;
+      moreWrap.classList.toggle("hidden", rest <= 0);
+      moreBtn.textContent = `显示更多（还有 ${Math.max(rest, 0)} 个）`;
+    }
+
     if (picked.size > 1) {
       input.disabled = true;
       input.value = "";
@@ -533,6 +586,8 @@
     state.modelChoices = [];
     state.pickedModels = new Set();
     state.modelProbeKey = "";
+    state.modelFilter = "";
+    state.modelLimit = MODEL_PAGE;
     const list = $("agentModelList");
     if (list) list.innerHTML = "";
     const box = $("agentModelChips");
@@ -540,6 +595,13 @@
       box.innerHTML = "";
       box.classList.add("hidden");
     }
+    const filter = $("agentModelFilter");
+    if (filter) {
+      filter.value = "";
+      filter.classList.add("hidden");
+    }
+    const moreWrap = $("agentModelMoreWrap");
+    if (moreWrap) moreWrap.classList.add("hidden");
     const input = $("agentModelInput");
     if (input) {
       input.disabled = false;
@@ -583,6 +645,10 @@
       const models = data.models || [];
       state.modelChoices = models;
       state.pickedModels = new Set();
+      state.modelFilter = "";
+      state.modelLimit = MODEL_PAGE;
+      const filter = $("agentModelFilter");
+      if (filter) filter.value = "";
       const list = $("agentModelList");
       if (list) list.innerHTML = models.map((m) => `<option value="${esc(m)}"></option>`).join("");
       // 编辑已有智能体时，把它当前的模型先勾上
@@ -600,6 +666,10 @@
         box.innerHTML = "";
         box.classList.add("hidden");
       }
+      const moreWrap = $("agentModelMoreWrap");
+      if (moreWrap) moreWrap.classList.add("hidden");
+      const filter = $("agentModelFilter");
+      if (filter) filter.classList.add("hidden");
       if (hint) hint.textContent = `${err.message}（模型名照样可以手填）`;
       if (!options.silent) toast(err.message, "err");
     } finally {
@@ -617,7 +687,9 @@
     const apiKey = form.elements.api_key.value.trim();
     if (!baseUrl) return;
     if (!apiKey && !state.editingAgentId) return;
-    const probe = `${baseUrl}|${apiKey ? "new" : "saved"}`;
+    // 指纹里带上 Key 的特征：换了 Key 就该重读，否则会拿旧列表去选模型
+    const keyTag = apiKey ? `k${apiKey.length}${apiKey.slice(-4)}` : "saved";
+    const probe = `${baseUrl}|${keyTag}`;
     if (state.modelProbeKey === probe && state.modelChoices.length) return;
     state.modelProbeKey = probe;
     fetchAgentModels({ silent: true });
@@ -1705,6 +1777,28 @@
           toast(detail.running ? "轮询已重启" : "轮询未运行（检查 token 与启用状态）", detail.running ? "ok" : "");
         } catch (err) { toast(err.message, "err"); }
         finally { btn.disabled = false; }
+      } else if (btn.dataset.action === "toggle") {
+        btn.disabled = true;
+        const turningOn = !botInst.enabled;
+        try {
+          const detail = await api(`/api/bots/${id}/toggle`, { method: "POST" });
+          state.botDetail[id] = detail;
+          botInst.enabled = Boolean(detail.enabled);
+          renderBots();
+          if (!detail.enabled) {
+            toast(`「${botInst.name || botInst.username}」已停用，不再回复消息（配置都留着）`, "ok");
+          } else if (detail.running) {
+            toast(`「${botInst.name || botInst.username}」已启用，轮询已跑起来`, "ok");
+          } else {
+            toast("已启用，但轮询没起来：检查 token 是否有效", "err");
+          }
+        } catch (err) {
+          toast(err.message, "err");
+          renderBots();
+        } finally {
+          btn.disabled = false;
+          if (turningOn) refreshBots();
+        }
       } else if (btn.dataset.action === "edit") {
         state.editingBotId = id;
         applyBotToForm(botInst);
@@ -1796,9 +1890,9 @@
     $("agentFetchModels").addEventListener("click", () => fetchAgentModels());
 
     $("agentModelChips").addEventListener("click", (e) => {
-      const chip = e.target.closest(".chip[data-idx]");
+      const chip = e.target.closest(".chip[data-model]");
       if (!chip) return;
-      const model = state.modelChoices[Number(chip.dataset.idx)];
+      const model = chip.dataset.model;
       if (!model) return;
       if (state.editingAgentId) {
         state.pickedModels = new Set([model]);
@@ -1813,6 +1907,25 @@
       }
       renderModelChips();
     });
+
+    if ($("agentModelFilter")) {
+      $("agentModelFilter").addEventListener("input", (e) => {
+        state.modelFilter = e.currentTarget.value;
+        state.modelLimit = MODEL_PAGE;
+        renderModelChips();
+      });
+      // 在筛选框里回车不该把整个表单提交掉
+      $("agentModelFilter").addEventListener("keydown", (e) => {
+        if (e.key === "Enter") e.preventDefault();
+      });
+    }
+
+    if ($("agentModelMore")) {
+      $("agentModelMore").addEventListener("click", () => {
+        state.modelLimit = (state.modelLimit || MODEL_PAGE) + MODEL_PAGE;
+        renderModelChips();
+      });
+    }
 
     $("agentModelInput").addEventListener("input", () => {
       if (!state.pickedModels.size) return;
@@ -1916,9 +2029,16 @@
         const btn = e.target.closest("button[data-base]");
         if (!btn) return;
         const form = $("agentForm");
+        // 换了接口，之前读到的模型列表和勾选都要清掉，否则会拿旧接口的模型去保存
+        resetModelPicker();
         form.elements.base_url.value = btn.dataset.base || "";
-        if (btn.dataset.model) form.elements.model.value = btn.dataset.model;
-        toast(`${btn.textContent.trim()} 的接口地址已填好，补上 Key 就能读模型`);
+        form.elements.model.value = btn.dataset.model || "";
+        if (btn.dataset.model) {
+          toast(`${btn.textContent.trim()} 的地址和模型已填好，补上 Key 就能用`);
+        } else {
+          toast(`${btn.textContent.trim()} 的地址已填好，补上 Key 就能读模型`);
+        }
+        maybeFetchAgentModels();
       });
     }
 

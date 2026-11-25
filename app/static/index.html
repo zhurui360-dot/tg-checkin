@@ -531,11 +531,11 @@
               <div class="presets" id="agentPresets">
                 <button type="button" class="chip" data-base="https://api.deepseek.com/v1" data-model="deepseek-chat">DeepSeek</button>
                 <button type="button" class="chip" data-base="https://api.siliconflow.cn/v1" data-model="">硅基流动</button>
+                <button type="button" class="chip" data-base="https://api.moonshot.cn/v1" data-model="moonshot-v1-8k">Kimi</button>
                 <button type="button" class="chip" data-base="https://openrouter.ai/api/v1" data-model="">OpenRouter</button>
-                <button type="button" class="chip" data-base="https://generativelanguage.googleapis.com/v1beta/openai" data-model="gemini-2.5-flash">Gemini 官方 API</button>
-                <button type="button" class="chip" data-base="https://ark.cn-beijing.volces.com/api/v3" data-model="">豆包（火山方舟）</button>
+                <button type="button" class="chip" data-base="https://token.sensenova.cn/v1" data-model="">商汤 SenseNova</button>
               </div>
-              <p class="muted" style="margin:6px 0 0">Gemini 用 Google AI Studio 的 Key，走它的 OpenAI 兼容端点；豆包用火山方舟的 Key，模型名要填<b>推理接入点 ID</b>（ep- 开头）或方舟上的模型名。两者都必须走<b>官方 API</b>——网页版的 Gemini / 豆包没有公开接口，强行抓页面会被风控、随时失效，这里不做。</p>
+              <p class="muted" style="margin:6px 0 0">地址填到 <code>/v1</code> 为止就行，整段 <code>…/v1/chat/completions</code> 粘进来也能自动纠正。任何兼容 OpenAI 协议的服务都能接。</p>
             </div>
             <label class="field span-2"><span>接口地址（base_url）</span><input name="base_url" placeholder="https://api.deepseek.com/v1" required></label>
             <label class="field span-2"><span>API Key</span><input name="api_key" type="password" placeholder="留空表示不修改"></label>
@@ -545,7 +545,11 @@
               </span>
               <input name="model" id="agentModelInput" list="agentModelList" placeholder="填好上面两项后点「读取模型」，也可以直接手填" required autocomplete="off">
               <datalist id="agentModelList"></datalist>
+              <input type="search" id="agentModelFilter" class="hidden" placeholder="筛选模型，输入关键字…" autocomplete="off">
               <div id="agentModelChips" class="model-chips hidden"></div>
+              <div id="agentModelMoreWrap" class="hidden" style="margin-top:6px">
+                <button type="button" class="btn small ghost" id="agentModelMore">显示更多</button>
+              </div>
               <p class="muted" id="agentModelHint" style="margin:0">填好接口地址和 Key 会自动去读这家接口的模型列表；想在同一家接口上用多个模型，勾选多个就行，保存时会一个模型建一个智能体。</p>
             </div>
             <label class="field span-2"><span>人设 / 系统提示词</span><textarea name="system_prompt" rows="3" placeholder="你是一个在 Telegram 群里聊天的助手，回答简洁、口语化…"></textarea></label>

@@ -279,10 +279,47 @@ def _ai_messages(
     return messages
 
 
+def normalize_base(base_url: str) -> str:
+    """把用户填的接口地址收拾成「到 /v1 为止」的形态。
+
+    面板上最常见的两种填法都会出问题：整段粘成 .../v1/chat/completions，
+    或者多带一层 .../v1/models。这里统一剥掉，只留服务根路径。
+    """
+    base = (base_url or "").strip().rstrip("/")
+    # 有人会把整条请求地址贴进来，逐层剥掉尾部端点
+    for suffix in ("/chat/completions", "/completions", "/models", "/embeddings", "/responses"):
+        if base.endswith(suffix):
+            base = base[: -len(suffix)].rstrip("/")
+    return base
+
+
+def _is_retryable(status: int) -> bool:
+    """429 与 5xx 属于暂时性故障，重试有意义；4xx 其他情况重试也没用。"""
+    return status == 429 or 500 <= status < 600
+
+
+def _retry_after(exc: urllib.error.HTTPError) -> float:
+    raw = (exc.headers or {}).get("Retry-After", "") if exc.headers else ""
+    try:
+        return max(0.0, min(float(str(raw).strip()), 8.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _rate_limit_hint(detail: str) -> str:
+    """把各家五花八门的限流报文翻成一句人话。"""
+    lowered = detail.lower()
+    if "tpm" in lowered or ("token" in lowered and "limit" in lowered):
+        return "接口限流（429）：这一分钟的 token 用量超了。等 1 分钟再试，或把「最大回复长度」调小、换用量更宽松的模型。"
+    if "rpm" in lowered or "request" in lowered:
+        return "接口限流（429）：这一分钟的请求次数超了。等 1 分钟再试，或换用量更宽松的模型。"
+    return "接口限流（429）：调用太频繁了。等 1 分钟再试，或换一个额度更大的模型。"
+
+
 def call_ai(messages: list[dict[str, str]], agent: dict[str, Any] | None = None) -> str:
     """调用兼容 OpenAI 接口的 chat/completions。agent 为空时用全局老配置。"""
     cfg = _agent_cfg(agent)
-    base = (cfg.get("ai_base_url") or "").strip().rstrip("/")
+    base = normalize_base(cfg.get("ai_base_url") or "")
     key = (cfg.get("ai_api_key") or "").strip()
     model = (cfg.get("ai_model") or "").strip()
     if not base:
@@ -292,7 +329,7 @@ def call_ai(messages: list[dict[str, str]], agent: dict[str, Any] | None = None)
     if not model:
         raise BotError("请填写模型名（例如 deepseek-chat）")
 
-    url = base if base.endswith("/chat/completions") else f"{base}/chat/completions"
+    url = f"{base}/chat/completions"
     try:
         url = security.guard_outbound(url)
     except security.SecurityError as exc:
@@ -332,28 +369,51 @@ def call_ai(messages: list[dict[str, str]], agent: dict[str, Any] | None = None)
             "User-Agent": "tg-checkin-bot/1.0",
         },
     )
-    # 连接被重置/超时属于跨境链路问题，多半是接口只对大陆网络开放，
-    # 云主机（多在境外）连不上。重试一次仍失败就给出可操作的提示。
+    # 两件事都要重试：跨境链路被重置（网络层），以及接口限流 / 临时 5xx（应用层）。
+    # 免费额度的 429 绝大多数是「每分钟」窗口，退避几秒往往就过了。
     last_net_error: Exception | None = None
-    for attempt in (1, 2):
+    last_http_error: tuple[int, str] | None = None
+    body: Any = None
+    delays = [1.5, 4.0]
+    for attempt in range(3):
         try:
             with opener.open(request, timeout=90) as response:
                 body = json.loads(response.read().decode("utf-8"))
             last_net_error = None
+            last_http_error = None
             break
         except urllib.error.HTTPError as exc:
             raw = exc.read().decode("utf-8", "replace")
             if exc.code == 401:
                 raise BotError("AI 接口鉴权失败，请检查 API Key") from exc
             if exc.code == 404:
-                raise BotError(f"AI 接口地址或模型名有误（HTTP 404）：{raw[:200]}") from exc
-            raise BotError(f"AI 接口返回 HTTP {exc.code}：{raw[:200]}") from exc
+                raise BotError(
+                    f"AI 接口地址或模型名有误（HTTP 404）：{raw[:200]}。"
+                    "确认 base_url 填到 /v1 为止、模型名拼写正确。"
+                ) from exc
+            if exc.code == 402:
+                raise BotError(f"账户余额不足（HTTP 402）：{raw[:160]}") from exc
+            last_http_error = (exc.code, raw)
+            last_net_error = None
+            if not _is_retryable(exc.code) or attempt == 2:
+                break
+            # 429 的上游常带 Retry-After，按它等更准；continue 跳过下面的通用退避
+            time.sleep(max(delays[attempt], _retry_after(exc)))
+            continue
         except urllib.error.URLError as exc:
             last_net_error = exc
+            last_http_error = None
         except (TimeoutError, ConnectionResetError) as exc:
             last_net_error = exc
-        if attempt == 1:
-            time.sleep(2)
+            last_http_error = None
+        if attempt < 2:
+            time.sleep(delays[attempt])
+
+    if last_http_error is not None:
+        code, raw = last_http_error
+        if code == 429:
+            raise BotError(_rate_limit_hint(raw))
+        raise BotError(f"AI 接口返回 HTTP {code}：{raw[:200]}")
 
     if last_net_error is not None:
         reason = getattr(last_net_error, "reason", last_net_error)
@@ -381,9 +441,47 @@ def test_ai(agent: dict[str, Any] | None = None) -> dict[str, Any]:
     return {"ok": True, "reply": text[:200], "ms": int((time.time() - started) * 1000)}
 
 
+def _model_names(data: Any) -> list[str]:
+    """从各家 /models 的返回里挖出模型名。
+
+    见过这些形状：{"data":[{"id":...}]}、{"models":[...]}、{"result":[...]}、
+    {"data":{"data":[...]}}、以及直接给一个数组。都兼容一下，省得用户以为接口坏了。
+    """
+    candidates: list[Any] = []
+    if isinstance(data, list):
+        candidates = data
+    elif isinstance(data, dict):
+        for key in ("data", "models", "result", "items"):
+            value = data.get(key)
+            if isinstance(value, list):
+                candidates = value
+                break
+            if isinstance(value, dict):
+                for inner in ("data", "models", "result", "items"):
+                    if isinstance(value.get(inner), list):
+                        candidates = value[inner]
+                        break
+                if candidates:
+                    break
+
+    names: list[str] = []
+    for item in candidates:
+        if isinstance(item, str):
+            name = item.strip()
+        elif isinstance(item, dict):
+            name = str(
+                item.get("id") or item.get("name") or item.get("model") or ""
+            ).strip()
+        else:
+            name = ""
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
 def list_models(base_url: str, api_key: str, proxy: str = "") -> dict[str, Any]:
     """读 OpenAI 兼容接口的 /models，让面板直接把可选模型列出来。"""
-    base = (base_url or "").strip().rstrip("/")
+    base = normalize_base(base_url)
     key = (api_key or "").strip()
     if not base:
         raise BotError("先填接口地址（例如 https://api.deepseek.com/v1）")
@@ -391,7 +489,7 @@ def list_models(base_url: str, api_key: str, proxy: str = "") -> dict[str, Any]:
         raise BotError("接口地址要以 http:// 或 https:// 开头")
     if not key:
         raise BotError("先填 API Key，读取模型列表要用它鉴权")
-    url = base if base.endswith("/models") else f"{base}/models"
+    url = f"{base}/models"
     try:
         url = security.guard_outbound(url)
     except security.SecurityError as exc:
@@ -414,44 +512,38 @@ def list_models(base_url: str, api_key: str, proxy: str = "") -> dict[str, Any]:
             "User-Agent": "tg-checkin-bot/1.0",
         },
     )
-    try:
-        with opener.open(request, timeout=25) as response:
-            raw = response.read().decode("utf-8", "replace")
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", "replace")[:200]
-        if exc.code in (401, 403):
-            raise BotError("鉴权失败，Key 可能不对或没开通权限") from exc
-        if exc.code == 404:
-            raise BotError(
-                "这个地址没有 /models 接口，模型名手动填也一样能用；"
-                "也可以把 base_url 补到 /v1 为止再试"
-            ) from exc
-        raise BotError(f"读取模型失败（HTTP {exc.code}）：{detail}") from exc
-    except urllib.error.URLError as exc:
-        raise BotError(f"连不上接口：{getattr(exc, 'reason', exc)}") from exc
-    except (TimeoutError, ConnectionResetError) as exc:
-        raise BotError(f"连接接口超时或被重置：{exc}") from exc
+    raw = ""
+    for attempt in range(2):
+        try:
+            with opener.open(request, timeout=25) as response:
+                raw = response.read().decode("utf-8", "replace")
+            break
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:200]
+            if exc.code in (401, 403):
+                raise BotError("鉴权失败，Key 可能不对或没开通权限") from exc
+            if exc.code == 404:
+                raise BotError(
+                    "这个地址没有 /models 接口（HTTP 404）。确认 base_url 填到 /v1 为止，"
+                    "例如 https://api.deepseek.com/v1；模型名手动填也一样能用"
+                ) from exc
+            if exc.code == 429:
+                if attempt == 0:
+                    time.sleep(max(1.5, _retry_after(exc)))
+                    continue
+                raise BotError(_rate_limit_hint(detail)) from exc
+            raise BotError(f"读取模型失败（HTTP {exc.code}）：{detail}") from exc
+        except urllib.error.URLError as exc:
+            raise BotError(f"连不上接口：{getattr(exc, 'reason', exc)}") from exc
+        except (TimeoutError, ConnectionResetError) as exc:
+            raise BotError(f"连接接口超时或被重置：{exc}") from exc
 
     try:
         data = json.loads(raw)
     except ValueError as exc:
         raise BotError(f"接口返回的不是 JSON，可能是把网页地址填成了 base_url：{raw[:120]}") from exc
 
-    items: Any = None
-    if isinstance(data, dict):
-        items = data.get("data")
-        if items is None:
-            items = data.get("models")
-    models: list[str] = []
-    for item in items or []:
-        if isinstance(item, str):
-            name = item.strip()
-        elif isinstance(item, dict):
-            name = str(item.get("id") or item.get("name") or "").strip()
-        else:
-            name = ""
-        if name and name not in models:
-            models.append(name)
+    models = _model_names(data)
     if not models:
         raise BotError("接口没返回任何模型，可能这把 Key 下没有可用模型，或服务没有实现 /models")
     models.sort()

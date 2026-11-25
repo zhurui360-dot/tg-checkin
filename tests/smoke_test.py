@@ -171,25 +171,38 @@ with TestClient(app) as client:
         def log_message(self, *args):
             pass
 
-        def do_GET(self):
-            if self.path.rstrip("/") != "/v1/models":
-                self.send_response(404)
-                self.end_headers()
-                return
-            if self.headers.get("Authorization") != "Bearer sk-models":
-                body = b'{"error":{"message":"invalid api key"}}'
-                self.send_response(401)
-            else:
-                body = b'{"object":"list","data":[{"id":"model-b"},{"id":"model-a"},{"id":"model-a"}]}'
-                self.send_response(200)
+        def _reply(self, code: int, body: bytes) -> None:
+            self.send_response(code)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
 
+        def do_GET(self):
+            path = self.path.rstrip("/")
+            if not path.endswith("/models"):
+                self._reply(404, b'{"error":"not found"}')
+                return
+            if self.headers.get("Authorization") != "Bearer sk-models":
+                self._reply(401, b'{"error":{"message":"invalid api key"}}')
+                return
+            if path == "/v1/models":
+                self._reply(200, b'{"object":"list","data":[{"id":"model-b"},{"id":"model-a"},{"id":"model-a"}]}')
+            elif path == "/arr/v1/models":
+                # 有些中转直接给一个数组
+                self._reply(200, b'["arr-1","arr-2"]')
+            elif path == "/nested/v1/models":
+                # 还有套两层的
+                self._reply(200, b'{"data":{"data":[{"name":"nested-1"}]}}')
+            elif path == "/limit/v1/models":
+                self._reply(429, b'{"error":{"message":"exceeds rpm limit"}}')
+            else:
+                self._reply(404, b'{"error":"not found"}')
+
     model_server = _ModelServer(("127.0.0.1", 0), ModelsHandler)
     threading.Thread(target=model_server.serve_forever, daemon=True).start()
-    models_url = f"http://127.0.0.1:{model_server.server_address[1]}/v1"
+    root_url = f"http://127.0.0.1:{model_server.server_address[1]}"
+    models_url = f"{root_url}/v1"
     try:
         probed = client.post("/api/ai/models", json={"base_url": models_url, "api_key": "sk-models"})
         assert probed.status_code == 200, probed.text
@@ -202,6 +215,20 @@ with TestClient(app) as client:
         # 地址 / Key 缺一个都直接拒
         assert client.post("/api/ai/models", json={"api_key": "x"}).status_code == 400
         assert client.post("/api/ai/models", json={"base_url": models_url}).status_code == 400
+        # 把整条 /chat/completions 粘进 base_url 也要能纠正过来
+        pasted = client.post("/api/ai/models", json={
+            "base_url": f"{models_url}/chat/completions", "api_key": "sk-models",
+        })
+        assert pasted.status_code == 200, pasted.text
+        assert pasted.json()["endpoint"].endswith("/v1/models"), pasted.text
+        # 数组 / 嵌套两种返回形状都要认得
+        arr = client.post("/api/ai/models", json={"base_url": f"{root_url}/arr/v1", "api_key": "sk-models"})
+        assert arr.status_code == 200 and arr.json()["models"] == ["arr-1", "arr-2"], arr.text
+        nested = client.post("/api/ai/models", json={"base_url": f"{root_url}/nested/v1", "api_key": "sk-models"})
+        assert nested.status_code == 200 and nested.json()["models"] == ["nested-1"], nested.text
+        # 429 重试一次后仍限流，要给人话
+        limited = client.post("/api/ai/models", json={"base_url": f"{root_url}/limit/v1", "api_key": "sk-models"})
+        assert limited.status_code == 400 and "限流" in limited.json()["detail"], limited.text
         # 同一家接口建两个模型：一个 key 复用
         local = client.post("/api/ai/agents", json={
             "name": "本地接口 · model-a", "base_url": models_url,
@@ -212,6 +239,9 @@ with TestClient(app) as client:
         # 编辑时 Key 留空，用存下来的那把
         reused = client.post("/api/ai/models", json={"base_url": models_url, "agent_id": local_id})
         assert reused.status_code == 200 and reused.json()["count"] == 2, reused.text
+        # 保存时也会把地址收拾干净
+        stored = [a for a in client.get("/api/ai/agents").json()["agents"] if a["id"] == local_id][0]
+        assert stored["base_url"] == models_url, stored
         assert client.delete(f"/api/ai/agents/{local_id}").status_code == 200
     finally:
         model_server.shutdown()
@@ -439,6 +469,23 @@ with TestClient(app) as client:
     assert client.delete("/api/bots/9999").status_code == 404
     assert client.post("/api/bots/9999/verify").status_code == 404
     assert client.post("/api/bots/9999/restart").status_code == 404
+    assert client.post("/api/bots/9999/toggle").status_code == 404
+
+    # 启用 / 停用开关：只翻 enabled，token、名字、绑定关系都不动
+    from app import db as _bdb
+    sw_id = _bdb.add_bot({"name": "开关测试", "token": "123:fake", "username": "sw", "enabled": True})
+    off = client.post(f"/api/bots/{sw_id}/toggle")
+    assert off.status_code == 200 and off.json()["enabled"] is False, off.text
+    assert off.json()["running"] is False, off.text
+    kept = [b for b in client.get("/api/bots").json()["bots"] if b["id"] == sw_id][0]
+    assert kept["name"] == "开关测试" and kept["token_set"] is True, kept
+    # 显式指定目标值，且重复设置是幂等的
+    again = client.post(f"/api/bots/{sw_id}/toggle", json={"enabled": False})
+    assert again.status_code == 200 and again.json()["enabled"] is False
+    on = client.post(f"/api/bots/{sw_id}/toggle", json={"enabled": True})
+    assert on.status_code == 200 and on.json()["enabled"] is True, on.text
+    assert client.post(f"/api/bots/{sw_id}/toggle").json()["enabled"] is False
+    assert client.delete(f"/api/bots/{sw_id}").status_code == 200
     # 不指定 bot_id 时，状态里仍要有兼容字段，不让老前端崩
     legacy = client.get("/api/bot/status").json()
     for key in ("enabled", "running", "token_set", "bots", "replies"):
@@ -854,4 +901,23 @@ with TestClient(app) as client:
     assert _as._in_list({"@alice"}, "@alice") is True
     assert _as._in_list({"@bob"}, "@alice") is False
 
-print("冒烟测试通过：健康检查、鉴权、群组 CRUD、cron 校验、设置保存、保活自检、AI 机器人、多智能体、机器人签到、扫码登录、多账号、多机器人、补签、备份恢复、WebDAV 自动建目录、GitHub 仓库诊断、安全加固（会话签名/限速/响应头/出网护栏）、长期记忆（注入/去重/作用域）、账号自动回复配置均正常")
+    # ---------------- 大模型接入：地址纠错与限流 ----------------
+    from app import bot as _ab
+    assert _ab.normalize_base("https://api.deepseek.com/v1/") == "https://api.deepseek.com/v1"
+    assert _ab.normalize_base("https://api.deepseek.com/v1/chat/completions") == "https://api.deepseek.com/v1"
+    assert _ab.normalize_base("https://api.deepseek.com/v1/models") == "https://api.deepseek.com/v1"
+    assert _ab.normalize_base("  https://a.com/v1//  ") == "https://a.com/v1"
+    # 各种 /models 返回形状
+    assert _ab._model_names({"data": [{"id": "a"}, {"id": "a"}, {"name": "b"}]}) == ["a", "b"]
+    assert _ab._model_names(["x", "y"]) == ["x", "y"]
+    assert _ab._model_names({"models": [{"model": "m1"}]}) == ["m1"]
+    assert _ab._model_names({"result": ["r1"]}) == ["r1"]
+    assert _ab._model_names({"data": {"data": [{"id": "n1"}]}}) == ["n1"]
+    assert _ab._model_names({"nope": []}) == []
+    # 限流报文翻译成人话
+    assert "token" in _ab._rate_limit_hint('{"message":"inference exceeds tpm/rpm limit"}')
+    assert "请求次数" in _ab._rate_limit_hint('{"message":"exceeds rpm limit"}')
+    assert "429" in _ab._rate_limit_hint("slow down")
+    assert _ab._is_retryable(429) and _ab._is_retryable(503) and not _ab._is_retryable(401)
+
+print("冒烟测试通过：健康检查、鉴权、群组 CRUD、cron 校验、设置保存、保活自检、AI 机器人、多智能体、机器人签到、扫码登录、多账号、多机器人、补签、备份恢复、WebDAV 自动建目录、GitHub 仓库诊断、安全加固（会话签名/限速/响应头/出网护栏）、长期记忆（注入/去重/作用域）、账号自动回复配置、大模型接入（地址纠错/返回格式兼容/限流提示）均正常")
