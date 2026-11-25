@@ -435,7 +435,14 @@ def create_group(body: dict[str, Any], _: None = Depends(require_auth)) -> dict[
 
 @app.put("/api/groups/{group_id}")
 def edit_group(group_id: int, body: dict[str, Any], _: None = Depends(require_auth)) -> dict[str, Any]:
-    if not db.update_group(group_id, _normalize_group(body)):
+    current = db.get_group(group_id)
+    if not current:
+        raise HTTPException(status_code=404, detail="群组不存在")
+    data = _normalize_group(body)
+    # 面板里已经没有「用哪个机器人」这一项了，老群的绑定别顺手清空
+    if "bot_id" not in body:
+        data["bot_id"] = current.get("bot_id")
+    if not db.update_group(group_id, data):
         raise HTTPException(status_code=404, detail="群组不存在")
     scheduler.reload_jobs()
     return {"ok": True}
