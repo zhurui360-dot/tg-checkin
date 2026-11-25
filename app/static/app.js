@@ -810,12 +810,14 @@
         const cls = it.action === "replied" ? "ok" : it.action === "error" ? "err" : "warn";
         const label = it.action === "replied" ? "已回复" : it.action === "error" ? "出错" : "跳过";
         const who = [it.chat_title, it.author].filter(Boolean).join(" · ");
+        const note = it.reason || it.detail || "";
+        // 空格子留空即可：桌面端还是一列，手机端靠 td:empty 整行不占位
         return `<tr>
-          <td class="nowrap">${esc(String(it.ts || "").slice(5, 19))}</td>
-          <td>${esc(who || it.chat_id || "")}</td>
-          <td class="preview-cell">${esc(it.preview || "")}</td>
-          <td><span class="badge ${cls}">${label}</span></td>
-          <td class="preview-cell">${esc(it.reason || it.detail || "")}</td>
+          <td class="nowrap" data-label="时间">${esc(String(it.ts || "").slice(5, 19))}</td>
+          <td data-label="会话">${esc(who || it.chat_id || "")}</td>
+          <td class="preview-cell" data-label="内容">${esc(it.preview || "")}</td>
+          <td data-label="结果"><span class="badge ${cls}">${label}</span></td>
+          <td class="preview-cell" data-label="说明">${esc(note)}</td>
         </tr>`;
       }).join("");
     } catch (err) {

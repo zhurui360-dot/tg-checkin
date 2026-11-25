@@ -287,6 +287,36 @@ td.wrap { max-width: 460px; word-break: break-word; white-space: pre-wrap; }
   .toast { left: 12px; right: 12px; top: auto; bottom: 16px; max-width: none; }
   .table-wrap { -webkit-overflow-scrolling: touch; max-width: 100%; }
   table { min-width: 560px; }
+  /* 处理记录这类窄表格手机上别横向滑，改成一行一张卡 */
+  .stack-mobile table { min-width: 0; }
+  .stack-mobile thead { display: none; }
+  .stack-mobile tbody tr {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto;
+    gap: 5px 8px; align-items: center;
+    padding: 11px 0; border-bottom: 1px solid #f0f1f4;
+  }
+  .stack-mobile tbody tr:last-child { border-bottom: 0; }
+  .stack-mobile tbody td {
+    display: block; padding: 0; border: 0; max-width: none;
+    white-space: normal; overflow: visible; text-overflow: clip;
+  }
+  /* 只给带标签的格子加前缀，空态那行 colspan 的不会冒出个孤零零的冒号 */
+  .stack-mobile tbody td[data-label]::before {
+    content: attr(data-label) "："; color: var(--muted);
+    font-size: 11px; margin-right: 4px;
+  }
+  .stack-mobile tbody td[data-label="时间"] { color: var(--muted); font-size: 11px; }
+  .stack-mobile tbody td[data-label="时间"]::before { content: none; }
+  .stack-mobile tbody td[data-label="结果"] { text-align: right; }
+  .stack-mobile tbody td[data-label="结果"]::before { content: none; }
+  /* 明确排格子：时间+徽章同一行，其余各占整行，避免 auto-placement 乱序 */
+  .stack-mobile tbody td[data-label="时间"] { grid-row: 1; grid-column: 1; }
+  .stack-mobile tbody td[data-label="结果"] { grid-row: 1; grid-column: 2; justify-self: end; }
+  .stack-mobile tbody td[data-label="会话"] { grid-row: 2; grid-column: 1 / -1; }
+  .stack-mobile tbody td[data-label="内容"] { grid-row: 3; grid-column: 1 / -1; }
+  .stack-mobile tbody td[data-label="说明"] { grid-row: 4; grid-column: 1 / -1; }
+  /* 没内容的格子整行不占位，别留「会话：」这种空标签 */
+  .stack-mobile tbody td:empty { display: none; }
   .qr-image { width: 100%; flex: 1 1 100%; height: auto; aspect-ratio: 1 / 1; }
   .modal-card { width: calc(100vw - 24px); padding: 18px; }
   .memory-item { flex-wrap: wrap; gap: 6px; }
