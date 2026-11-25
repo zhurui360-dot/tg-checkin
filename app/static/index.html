@@ -29,12 +29,30 @@
       </div>
     </div>
     <nav class="nav">
-      <button class="nav-item active" data-tab="dashboard"><span class="dot"></span>概览</button>
-      <button class="nav-item" data-tab="groups"><span class="dot"></span>群组管理</button>
-      <button class="nav-item" data-tab="bot"><span class="dot"></span>AI 机器人</button>
-      <button class="nav-item" data-tab="account"><span class="dot"></span>账号与登录</button>
-      <button class="nav-item" data-tab="settings"><span class="dot"></span>系统设置</button>
-      <button class="nav-item" data-tab="logs"><span class="dot"></span>运行日志</button>
+      <button class="nav-item active" data-tab="dashboard">
+        <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="2"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="2"/></svg>
+        概览
+      </button>
+      <button class="nav-item" data-tab="groups">
+        <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-1.8a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4V21"/><circle cx="9" cy="7.2" r="3.6"/><path d="M22 21v-1.8a4 4 0 0 0-3-3.87"/><path d="M16.5 3.9a4 4 0 0 1 0 7.5"/></svg>
+        群组管理
+      </button>
+      <button class="nav-item" data-tab="bot">
+        <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="7.5" width="17" height="12.5" rx="4"/><path d="M12 7.5V4"/><circle cx="12" cy="3" r="1.2"/><path d="M8.5 13h.01M15.5 13h.01"/><path d="M9.5 16.8h5"/></svg>
+        AI 机器人
+      </button>
+      <button class="nav-item" data-tab="account">
+        <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4.5 21a7.5 7.5 0 0 1 15 0"/></svg>
+        账号与登录
+      </button>
+      <button class="nav-item" data-tab="settings">
+        <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.11a1.7 1.7 0 0 0-1.1-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.11A1.7 1.7 0 0 0 4.67 8.6a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34H9a1.7 1.7 0 0 0 1-1.56V3a2 2 0 1 1 4 0v.11a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V9a1.7 1.7 0 0 0 1.56 1H21a2 2 0 1 1 0 4h-.11a1.7 1.7 0 0 0-1.56 1z"/></svg>
+        系统设置
+      </button>
+      <button class="nav-item" data-tab="logs">
+        <svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 2.5H7A2.5 2.5 0 0 0 4.5 5v14A2.5 2.5 0 0 0 7 21.5h10a2.5 2.5 0 0 0 2.5-2.5V7.5z"/><path d="M14.5 2.5v5h5"/><path d="M8.5 12.5h7M8.5 16.5h4.5"/></svg>
+        运行日志
+      </button>
     </nav>
     <div class="sidebar-foot">
       <span id="versionText">v1.0.0</span>
@@ -147,7 +165,7 @@
         </div>
 
         <div class="card">
-          <div class="card-head" id="accountFormTitle">添加账号</div>
+          <div class="card-head"><h3 id="accountFormTitle">添加账号</h3></div>
           <form id="accountForm" class="form-grid">
             <label class="field"><span>账号备注名</span><input name="name" placeholder="例如：主号 / 小号"></label>
             <label class="field"><span>手机号</span><input name="phone" placeholder="+8613800138000"></label>
@@ -431,7 +449,7 @@
         </div>
 
         <div class="card">
-          <div class="card-head" id="botFormTitle">添加机器人</div>
+          <div class="card-head"><h3 id="botFormTitle">添加机器人</h3></div>
           <ol class="muted" style="line-height:1.9;padding-left:18px;margin:10px 0 16px">
             <li>在 Telegram 搜索 <strong>@BotFather</strong>，发送 <code>/newbot</code></li>
             <li>按提示起名字和用户名（用户名必须以 bot 结尾）</li>

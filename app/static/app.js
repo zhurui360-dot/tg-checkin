@@ -158,13 +158,13 @@
 
     const logs = data.logs.slice(0, 6);
     $("recentLogs").innerHTML = logs.length
-      ? `<table><thead><tr><th>时间</th><th>群组</th><th>状态</th><th>备注</th></tr></thead><tbody>${logs.map((log) => `
+      ? `<div class="table-wrap stack-mobile"><table><thead><tr><th>时间</th><th>群组</th><th>状态</th><th>备注</th></tr></thead><tbody>${logs.map((log) => `
           <tr>
-            <td class="mono">${esc(log.ts)}</td>
-            <td>${esc(log.group_name || "-")}</td>
-            <td>${statusBadge(log.status)}</td>
-            <td class="note">${esc(log.message || "-")}</td>
-          </tr>`).join("")}</tbody></table>`
+            <td class="mono" data-label="时间">${esc(log.ts)}</td>
+            <td data-label="群组">${esc(log.group_name || "-")}</td>
+            <td data-label="状态">${statusBadge(log.status)}</td>
+            <td class="note" data-label="备注">${esc(log.message || "-")}</td>
+          </tr>`).join("")}</tbody></table></div>`
       : `<div class="empty">暂无运行记录</div>`;
 
     const standbyBadge = $("standbyBadge");
