@@ -22,7 +22,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from . import db, security
+from . import db, memory, security
 
 log = logging.getLogger("tg-checkin.bot")
 
@@ -234,19 +234,38 @@ def _agent_cfg(agent: dict[str, Any] | None) -> dict[str, str]:
 
 
 def _ai_messages(
-    chat_id: str, user_text: str, author: str, is_private: bool, bot_id: int | None = None
+    chat_id: str,
+    user_text: str,
+    author: str,
+    is_private: bool,
+    bot_id: int | None = None,
+    agent: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
-    cfg = _agent_cfg(db.agent_for_bot(bot_id))
+    if agent is None:
+        agent = db.agent_for_bot(bot_id)
+    cfg = _agent_cfg(agent)
     system = (cfg.get("ai_system_prompt") or "").strip()
     messages: list[dict[str, str]] = []
     if system:
         messages.append({"role": "system", "content": system})
 
+    # 长期记忆：跨天、跨会话都还在的那部分；按当前这句话挑相关的几条注入
+    try:
+        agent_id = int(agent["id"]) if agent and agent.get("id") is not None else 0
+        max_notes = int(cfg.get("memory_max_notes", db.get_setting("memory_max_notes", "8")) or 8)
+    except (TypeError, ValueError):
+        agent_id, max_notes = 0, 8
+    recalled = memory.context(agent_id, chat_id, author, user_text, limit=max_notes)
+    if recalled:
+        messages.append({"role": "system", "content": recalled})
+
     try:
         history_len = max(0, min(int(cfg.get("ai_history_len", "12")), 40))
     except ValueError:
         history_len = 12
-    for item in db.ai_history(chat_id, history_len, bot_id=bot_id or 0):
+    # 老配置没有 agent 维度时按 bot 存；有 agent 时按 agent 存，换机器人的同一智能体也能接上前文
+    scope_id = int(agent["id"]) if agent and agent.get("id") is not None else (bot_id or 0)
+    for item in db.ai_history(chat_id, history_len, bot_id=scope_id):
         role = item.get("role")
         content = str(item.get("content") or "").strip()
         if role not in ("user", "assistant") or not content:
@@ -659,10 +678,12 @@ def _handle_message(message: dict[str, Any], bot_id: int | None = None) -> None:
     author = _author(message)
     is_private = chat.get("type") == "private"
     storage_id = str(chat_id)
-    db.add_ai_message(storage_id, title, "user", author, text, bot_id=bot_id or 0)
+    # 有智能体就按智能体存对话和记忆，换机器人接手同一智能体也能接上前文
+    scope_id = int(agent["id"]) if agent and agent.get("id") is not None else (bot_id or 0)
+    db.add_ai_message(storage_id, title, "user", author, text, bot_id=scope_id)
 
     try:
-        messages = _ai_messages(storage_id, text, author, is_private, bot_id)
+        messages = _ai_messages(storage_id, text, author, is_private, bot_id, agent)
         answer = call_ai(messages, agent=agent) or "（模型没有返回内容）"
     except BotError as exc:
         log.warning("AI 调用失败：%s", exc)
@@ -674,7 +695,8 @@ def _handle_message(message: dict[str, Any], bot_id: int | None = None) -> None:
             pass
         return
 
-    db.add_ai_message(storage_id, title, "assistant", "bot", answer, bot_id=bot_id or 0)
+    db.add_ai_message(storage_id, title, "assistant", "bot", answer, bot_id=scope_id)
+    memory.learn_async(scope_id, storage_id, title, author, text, answer, agent=agent)
     if state["last_error"].startswith("AI 调用失败"):
         state["last_error"] = ""
     try:

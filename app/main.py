@@ -13,7 +13,18 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__, backup, bot, db, keepalive, scheduler, security, telegram
+from . import (
+    __version__,
+    assistant,
+    backup,
+    bot,
+    db,
+    keepalive,
+    memory,
+    scheduler,
+    security,
+    telegram,
+)
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -50,9 +61,12 @@ async def lifespan(app: FastAPI):
         keepalive.start()
         bot.start()
         backup.start_auto()
+        if db.get_setting("assistant_enabled", "0") == "1":
+            assistant.start()
     log.info("TG Checkin Panel %s 已启动", __version__)
     yield
     if not STANDBY:
+        assistant.stop()
         scheduler.stop_catchup()
         backup.stop_auto()
         bot.stop()
@@ -242,6 +256,22 @@ def bootstrap(_: None = Depends(require_auth)) -> dict[str, Any]:
             "github_path": settings.get("github_path", "tgck-backups"),
             "github_auto": settings.get("github_auto", "0"),
             "github_keep": settings.get("github_keep", "14"),
+            # 智能体记忆 / 账号自动回复
+            "memory_enabled": settings.get("memory_enabled", "1"),
+            "memory_learn": settings.get("memory_learn", "1"),
+            "memory_max_notes": settings.get("memory_max_notes", "8"),
+            "assistant_enabled": settings.get("assistant_enabled", "0"),
+            "assistant_private": settings.get("assistant_private", "1"),
+            "assistant_groups": settings.get("assistant_groups", "0"),
+            "assistant_trigger": settings.get("assistant_trigger", "mention"),
+            "assistant_whitelist": settings.get("assistant_whitelist", ""),
+            "assistant_blacklist": settings.get("assistant_blacklist", ""),
+            "assistant_ignore_bots": settings.get("assistant_ignore_bots", "1"),
+            "assistant_cooldown": settings.get("assistant_cooldown", "5"),
+            "assistant_max_per_hour": settings.get("assistant_max_per_hour", "30"),
+            "assistant_quiet": settings.get("assistant_quiet", ""),
+            "assistant_account_id": settings.get("assistant_account_id", ""),
+            "assistant_agent_id": settings.get("assistant_agent_id", ""),
         },
         "account": {
             "authorized": authorized,
@@ -292,6 +322,11 @@ def bootstrap(_: None = Depends(require_auth)) -> dict[str, Any]:
         "backup": backup.status(),
         "keepalive": keepalive.status(),
         "bot": bot.status(),
+        "assistant": assistant.status(),
+        "memory": {
+            str(item.get("id")): db.note_stats(int(item["id"]))
+            for item in db.list_agents()
+        },
     }
 
 
@@ -439,6 +474,13 @@ SETTING_KEYS = {
     "ai_base_url", "ai_api_key", "ai_model", "ai_system_prompt",
     "ai_history_len", "ai_max_tokens", "ai_temperature", "ai_min_interval",
     "ai_proxy",
+    # 智能体记忆
+    "memory_enabled", "memory_learn", "memory_max_notes",
+    # 用自己账号自动回复
+    "assistant_enabled", "assistant_account_id", "assistant_agent_id",
+    "assistant_private", "assistant_groups", "assistant_trigger",
+    "assistant_whitelist", "assistant_blacklist", "assistant_ignore_bots",
+    "assistant_cooldown", "assistant_max_per_hour", "assistant_quiet",
     # 备份 / 恢复
     "backup_auto", "backup_interval", "backup_keep", "backup_restore_on_boot",
     "webdav_url", "webdav_dir", "webdav_username", "webdav_password", "webdav_auto", "webdav_keep",
@@ -451,6 +493,7 @@ NUMERIC_SETTING_KEYS = {
     "retry_count", "retry_delay", "jitter", "keepalive_interval",
     "catchup_interval", "catchup_cooldown",
     "backup_interval", "backup_keep", "webdav_keep", "github_keep",
+    "memory_max_notes", "assistant_cooldown", "assistant_max_per_hour",
 }
 # 留空表示不修改的字段（避免面板回填掩码后把真实值覆盖成星号）
 SECRET_KEYS = {
@@ -460,6 +503,8 @@ SECRET_KEYS = {
 TOGGLE_KEYS = {
     "catchup_enabled", "bot_enabled", "backup_auto",
     "backup_restore_on_boot", "webdav_auto", "github_auto",
+    "memory_enabled", "memory_learn",
+    "assistant_enabled", "assistant_private", "assistant_groups", "assistant_ignore_bots",
 }
 
 
@@ -512,6 +557,31 @@ def update_settings(body: dict[str, Any], _: None = Depends(require_auth)) -> di
         if key == "ai_agent_id" and value:
             if not value.isdigit() or not db.get_agent(int(value)):
                 raise HTTPException(status_code=400, detail="指定的 AI 智能体不存在")
+        if key == "assistant_agent_id" and value:
+            if not value.isdigit() or not db.get_agent(int(value)):
+                raise HTTPException(status_code=400, detail="指定的 AI 智能体不存在")
+        if key == "assistant_account_id" and value:
+            if not value.isdigit() or not db.get_account(int(value)):
+                raise HTTPException(status_code=400, detail="指定的账号不存在")
+        if key == "assistant_trigger" and value not in ("mention", "reply", "all"):
+            raise HTTPException(status_code=400, detail="assistant_trigger 只能是 mention / reply / all")
+        if key == "assistant_quiet" and value:
+            import re as _re
+
+            if not _re.fullmatch(r"\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}", value):
+                raise HTTPException(status_code=400, detail="免打扰时段格式应为 23:30-08:00")
+        if key == "memory_max_notes" and value:
+            db.set_setting(key, str(max(1, min(int(float(value)), 20))))
+            changed.add(key)
+            continue
+        if key == "assistant_cooldown" and value:
+            db.set_setting(key, str(max(0, min(int(float(value)), 120))))
+            changed.add(key)
+            continue
+        if key == "assistant_max_per_hour" and value:
+            db.set_setting(key, str(max(1, min(int(float(value)), 200))))
+            changed.add(key)
+            continue
         if key in TOGGLE_KEYS and value not in ("0", "1"):
             raise HTTPException(status_code=400, detail=f"{key} 只能是 0 或 1")
         if key == "backup_interval" and value:
@@ -536,6 +606,17 @@ def update_settings(body: dict[str, Any], _: None = Depends(require_auth)) -> di
     if changed & {"backup_auto", "backup_interval"} and not STANDBY:
         if db.get_setting("backup_auto", "0") == "1":
             backup.start_auto()
+    if changed & {
+        "assistant_enabled", "assistant_account_id", "assistant_agent_id",
+        "assistant_private", "assistant_groups", "assistant_trigger",
+        "assistant_whitelist", "assistant_blacklist", "assistant_ignore_bots",
+        "assistant_cooldown", "assistant_max_per_hour", "assistant_quiet",
+    } and not STANDBY:
+        # 开关或范围变了就重启线程，让新配置立刻生效；关掉时 stop 即可
+        if db.get_setting("assistant_enabled", "0") == "1":
+            assistant.restart()
+        else:
+            assistant.stop()
     result: dict[str, Any] = {"ok": True}
     # 地址或文件夹刚填好，就把云端目录建出来，省得用户再去别处手动新建
     if changed & {"webdav_url", "webdav_dir", "webdav_username", "webdav_password"}:
@@ -777,6 +858,76 @@ def test_ai_agent(agent_id: int, _: None = Depends(require_auth)) -> dict[str, A
         return bot.test_ai(agent=agent)
     except bot.BotError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+# ---------------- 智能体记忆 ----------------
+
+@app.get("/api/memory")
+def list_memory(
+    agent_id: int = Query(0),
+    scope: str = Query(""),
+    limit: int = Query(200),
+    _: None = Depends(require_auth),
+) -> dict[str, Any]:
+    if scope and scope not in ("global", "chat", "user"):
+        raise HTTPException(status_code=400, detail="scope 只能是 global / chat / user")
+    return {
+        "notes": db.list_notes(agent_id, scope or None, None, limit),
+        "stats": db.note_stats(agent_id),
+    }
+
+
+@app.post("/api/memory")
+def add_memory(body: dict[str, Any], _: None = Depends(require_auth)) -> dict[str, Any]:
+    """手动塞一条记忆：面板里补一句「他叫小王，在杭州做后端」比等模型自己悟更可靠。"""
+    try:
+        agent_id = int(body.get("agent_id") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="agent_id 必须是数字")
+    content = str(body.get("content", "")).strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="记忆内容不能为空")
+    if len(content) > 300:
+        raise HTTPException(status_code=400, detail="一条记忆别超过 300 字，拆成几条更好用")
+    scope = str(body.get("scope", "global")).strip() or "global"
+    if scope not in ("global", "chat", "user"):
+        raise HTTPException(status_code=400, detail="scope 只能是 global / chat / user")
+    scope_key = str(body.get("scope_key", "")).strip()
+    if scope != "global" and not scope_key:
+        raise HTTPException(status_code=400, detail="按会话或按人记的时候，要填会话 ID 或对方名字")
+    note_id = db.add_note(agent_id, scope, scope_key, content, source="manual")
+    return {"ok": True, "id": note_id, "stats": db.note_stats(agent_id)}
+
+
+@app.delete("/api/memory/{note_id}")
+def remove_memory(note_id: int, _: None = Depends(require_auth)) -> dict[str, Any]:
+    if not db.delete_note(note_id):
+        raise HTTPException(status_code=404, detail="这条记忆不存在")
+    return {"ok": True}
+
+
+@app.delete("/api/memory")
+def clear_memory(
+    agent_id: int = Query(0),
+    scope: str = Query(""),
+    _: None = Depends(require_auth),
+) -> dict[str, Any]:
+    removed = db.clear_notes(agent_id, scope or "")
+    return {"ok": True, "removed": removed, "stats": db.note_stats(agent_id)}
+
+
+# ---------------- 用我的账号自动回复 ----------------
+
+@app.get("/api/assistant")
+def assistant_state(_: None = Depends(require_auth)) -> dict[str, Any]:
+    return assistant.status()
+
+
+@app.post("/api/assistant/restart")
+def assistant_restart(_: None = Depends(require_auth)) -> dict[str, Any]:
+    if db.get_setting("assistant_enabled", "0") != "1":
+        return {"ok": False, "error": "先打开「用我的账号自动回复」再启动", **assistant.status()}
+    return {"ok": True, **assistant.restart()}
 
 
 @app.post("/api/bot/send")

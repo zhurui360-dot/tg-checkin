@@ -454,6 +454,52 @@
           </form>
         </div>
 
+        <div class="card" id="assistantCard">
+          <div class="card-head">
+            <h3>用我的账号自动回复（私聊 / 群聊）</h3>
+            <span id="assistantBadge" class="badge">未启动</span>
+          </div>
+          <div class="notice warn">
+            <strong>这是用你本人账号说话，先看清楚再打开</strong>
+            <p>开启后程序会读取你账号收到的消息，并<b>以你本人身份</b>回复。对方看到的是你，不是你养的机器人。由此带来的隐私风险（消息内容会发给 AI 接口）和账号风险（被举报或被判定自动化，可能被限制甚至封禁）由你自己承担。建议先用白名单只放几个测试会话，跑顺了再放宽。</p>
+          </div>
+          <form id="assistantForm" class="form-grid" style="margin-top:14px">
+            <label class="field"><span>总开关</span>
+              <select name="assistant_enabled"><option value="0">关闭</option><option value="1">开启（真的会替你回消息）</option></select>
+            </label>
+            <label class="field"><span>用哪个账号</span><select name="assistant_account_id" id="assistantAccountSelect"><option value="">默认账号</option></select></label>
+            <label class="field"><span>用哪个智能体</span><select name="assistant_agent_id" id="assistantAgentSelect"><option value="">跟随默认智能体</option></select></label>
+            <label class="field"><span>回复范围</span>
+              <select name="assistant_scope">
+                <option value="private">只回私聊</option>
+                <option value="both">私聊 + 群聊</option>
+                <option value="groups">只回群聊</option>
+              </select>
+            </label>
+            <label class="field"><span>群里什么时候回</span>
+              <select name="assistant_trigger">
+                <option value="mention">被 @ 或被回复时（推荐）</option>
+                <option value="reply">只在回复我的消息时</option>
+                <option value="all">群里每条都回（很吵，慎用）</option>
+              </select>
+            </label>
+            <label class="field"><span>忽略其他机器人</span>
+              <select name="assistant_ignore_bots"><option value="1">是（避免和别的 bot 互刷）</option><option value="0">否</option></select>
+            </label>
+            <label class="field"><span>同会话最短间隔（秒）</span><input name="assistant_cooldown" type="number" min="0" max="120" value="5"></label>
+            <label class="field"><span>每小时最多回几条</span><input name="assistant_max_per_hour" type="number" min="1" max="200" value="30"></label>
+            <label class="field span-2"><span>白名单（留空 = 不限；填了就只回这些）</span><input name="assistant_whitelist" placeholder="@somebody, -1001234567890，逗号分隔"></label>
+            <label class="field span-2"><span>黑名单（永不回复）</span><input name="assistant_blacklist" placeholder="前任、老板、某个群…"></label>
+            <label class="field"><span>免打扰时段</span><input name="assistant_quiet" placeholder="23:30-08:00，留空不限"></label>
+            <p class="muted" style="margin:0;align-self:end">时段内不回复任何消息，只在这段时间外工作。</p>
+            <div class="span-2 form-actions">
+              <button type="submit" class="btn primary">保存并应用</button>
+              <button type="button" class="btn" id="assistantRestartBtn">重连账号</button>
+            </div>
+          </form>
+          <p id="assistantStatusText" class="muted" style="margin:14px 0 0">加载中…</p>
+        </div>
+
         <div class="card">
           <div class="card-head">
             <h3>AI 智能体</h3>
@@ -480,6 +526,17 @@
             <label class="field"><span>启用</span>
               <select name="enabled"><option value="1">开启</option><option value="0">关闭</option></select>
             </label>
+            <div class="field span-2">
+              <span class="field-head">常用接口（点一下自动填地址和模型）</span>
+              <div class="presets" id="agentPresets">
+                <button type="button" class="chip" data-base="https://api.deepseek.com/v1" data-model="deepseek-chat">DeepSeek</button>
+                <button type="button" class="chip" data-base="https://api.siliconflow.cn/v1" data-model="">硅基流动</button>
+                <button type="button" class="chip" data-base="https://openrouter.ai/api/v1" data-model="">OpenRouter</button>
+                <button type="button" class="chip" data-base="https://generativelanguage.googleapis.com/v1beta/openai" data-model="gemini-2.5-flash">Gemini 官方 API</button>
+                <button type="button" class="chip" data-base="https://ark.cn-beijing.volces.com/api/v3" data-model="">豆包（火山方舟）</button>
+              </div>
+              <p class="muted" style="margin:6px 0 0">Gemini 用 Google AI Studio 的 Key，走它的 OpenAI 兼容端点；豆包用火山方舟的 Key，模型名要填<b>推理接入点 ID</b>（ep- 开头）或方舟上的模型名。两者都必须走<b>官方 API</b>——网页版的 Gemini / 豆包没有公开接口，强行抓页面会被风控、随时失效，这里不做。</p>
+            </div>
             <label class="field span-2"><span>接口地址（base_url）</span><input name="base_url" placeholder="https://api.deepseek.com/v1" required></label>
             <label class="field span-2"><span>API Key</span><input name="api_key" type="password" placeholder="留空表示不修改"></label>
             <div class="field span-2">
@@ -504,6 +561,49 @@
               <button type="button" class="btn ghost hidden" id="agentCancelBtn">取消编辑</button>
             </div>
           </form>
+        </div>
+
+        <div class="card" id="memoryCard">
+          <div class="card-head">
+            <h3>智能体记忆</h3>
+            <span class="muted" id="memorySummary">加载中…</span>
+          </div>
+          <p class="muted" style="margin:8px 0 14px">「上下文条数」只是最近几条对话，滚出去就忘了。这里是<b>长期记忆</b>：聊天时自动提炼出称呼、身份、偏好、约定这类稳定信息，存进数据库，下次换个会话甚至隔几天再聊也还在。注入时按当前这句话挑最相关的几条，不会把整本笔记都塞给模型。</p>
+          <div class="form-grid">
+            <label class="field"><span>记忆开关</span>
+              <select name="memory_enabled" id="memoryEnabled"><option value="1">注入记忆</option><option value="0">不注入（保留但不使用）</option></select>
+            </label>
+            <label class="field"><span>自动提炼</span>
+              <select name="memory_learn" id="memoryLearn"><option value="1">开启（每 3 轮提炼一次）</option><option value="0">关闭（只用手动添加）</option></select>
+            </label>
+            <label class="field"><span>看哪个智能体</span><select id="memoryAgentSelect"></select></label>
+            <label class="field"><span>范围筛选</span>
+              <select id="memoryScopeFilter">
+                <option value="">全部</option>
+                <option value="global">全局</option>
+                <option value="chat">按会话</option>
+                <option value="user">按人</option>
+              </select>
+            </label>
+            <label class="field span-2"><span>手动记一条（比等模型自己悟更准）</span>
+              <input id="memoryContent" placeholder="例如：他叫小王，在杭州做后端，喜欢直接给结论">
+            </label>
+            <label class="field"><span>记给谁</span>
+              <select id="memoryScope">
+                <option value="global">全局（跟谁聊都适用）</option>
+                <option value="user">某个人（需填对方名字）</option>
+                <option value="chat">某个会话（需填会话 ID）</option>
+              </select>
+            </label>
+            <label class="field"><span>对方名字 / 会话 ID（按人、按会话时填）</span>
+              <input id="memoryScopeKey" placeholder="例如：小王 或 -1001234567890">
+            </label>
+            <div class="span-2 form-actions">
+              <button type="button" class="btn primary" id="memoryAddBtn">记住这条</button>
+              <button type="button" class="btn danger" id="memoryClearBtn">清空这个智能体的记忆</button>
+            </div>
+          </div>
+          <div id="memoryList" class="memory-list"><p class="muted">还没有记忆。</p></div>
         </div>
 
         <div class="card">

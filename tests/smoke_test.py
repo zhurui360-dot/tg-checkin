@@ -783,4 +783,70 @@ with TestClient(app) as client:
     # 留回原始密码，后续断言不受影响
     assert client.put("/api/settings", json={"panel_password": "admin123"}).status_code == 200
 
-print("冒烟测试通过：健康检查、鉴权、群组 CRUD、cron 校验、设置保存、保活自检、AI 机器人、多智能体、机器人签到、扫码登录、多账号、多机器人、补签、备份恢复、WebDAV 自动建目录、GitHub 仓库诊断、安全加固（会话签名/限速/响应头/出网护栏）均正常")
+    # ---------------- 智能体长期记忆 ----------------
+    from app import memory as _mem
+
+    agent_id = client.get("/api/ai/agents").json()["default_id"]
+    assert agent_id, "应当有默认智能体"
+
+    assert client.post("/api/memory", json={"agent_id": agent_id, "content": "他叫小王，在杭州做后端"}).status_code == 200
+    assert client.post("/api/memory", json={"agent_id": agent_id, "content": "  "}).status_code == 400
+    assert client.post("/api/memory", json={"agent_id": agent_id, "content": "x", "scope": "user"}).status_code == 400
+    assert client.post("/api/memory", json={"agent_id": agent_id, "content": "x", "scope": "bogus"}).status_code == 400
+
+    # 手动 + 自动两种来源都能记；按人记的只在对应人身上出现
+    client.post("/api/memory", json={"agent_id": agent_id, "content": "小王讨厌被叫全名",
+                                     "scope": "user", "scope_key": "小王"})
+    listed_notes = client.get(f"/api/memory?agent_id={agent_id}").json()
+    assert listed_notes["stats"]["total"] == 2, listed_notes["stats"]
+    assert listed_notes["stats"]["user"] == 1 and listed_notes["stats"]["global"] == 1
+
+    block = _mem.context(agent_id, "-100123", "小王", "这个接口帮我看看设计得对不对")
+    assert "杭州" in block, block
+    assert "讨厌被叫全名" in block, block
+    # 别人来聊，只该看到全局那条
+    other = _mem.context(agent_id, "-100123", "李四", "在吗")
+    assert "讨厌被叫全名" not in other and "杭州" in other
+
+    # 去重：换一种说法不该重复入库
+    _sdb.add_note(agent_id, "global", "", "重复测试：他住在杭州", "manual")
+    assert _mem._similar("小王在杭州做后端", "小王 在杭州 做后端。")
+    assert not _mem._similar("小王在杭州做后端", "他养了两只猫")
+
+    note_id = [n for n in listed_notes["notes"] if n["scope"] == "global"][0]["id"]
+    assert client.delete(f"/api/memory/{note_id}").status_code == 200
+    assert client.delete(f"/api/memory/{note_id}").status_code == 404
+    removed = client.delete(f"/api/memory?agent_id={agent_id}").json()
+    assert removed["removed"] >= 1 and removed["stats"]["total"] == 0
+
+    # 关掉注入后不再拼记忆块
+    assert client.put("/api/settings", json={"memory_enabled": "0"}).status_code == 200
+    _sdb.add_note(agent_id, "global", "", "开关测试：记得打招呼", "manual")
+    assert _mem.context(agent_id, "-100123", "小王", "你好") == ""
+    assert client.put("/api/settings", json={"memory_enabled": "1"}).status_code == 200
+    assert "打招呼" in _mem.context(agent_id, "-100123", "小王", "你好")
+    assert client.put("/api/settings", json={"memory_max_notes": "99"}).status_code == 200
+    assert _sdb.get_setting("memory_max_notes") == "20"
+
+    # ---------------- 用自己账号自动回复 ----------------
+    st = client.get("/api/assistant").json()
+    assert st["enabled"] is False and st["running"] is False
+    assert client.post("/api/assistant/restart").json()["ok"] is False
+
+    assert client.put("/api/settings", json={"assistant_trigger": "sometimes"}).status_code == 400
+    assert client.put("/api/settings", json={"assistant_quiet": "晚上到早上"}).status_code == 400
+    assert client.put("/api/settings", json={"assistant_quiet": "23:30-08:00"}).status_code == 200
+    assert client.put("/api/settings", json={"assistant_cooldown": "999"}).status_code == 200
+    assert _sdb.get_setting("assistant_cooldown") == "120"
+    assert client.put("/api/settings", json={"assistant_max_per_hour": "0"}).status_code == 200
+    assert _sdb.get_setting("assistant_max_per_hour") == "1"
+    assert client.put("/api/settings", json={"assistant_agent_id": "9999"}).status_code == 400
+
+    # 免打扰时段与名单匹配的逻辑（不启动线程，纯函数）
+    from app import assistant as _as
+    assert _as._quiet_now("") is False
+    assert _as._quiet_now("00:00-23:59") is True
+    assert _as._in_list({"@alice", "-1001"}, "@alice, -1002") is True
+    assert _as._in_list({"@bob"}, "@alice") is False
+
+print("冒烟测试通过：健康检查、鉴权、群组 CRUD、cron 校验、设置保存、保活自检、AI 机器人、多智能体、机器人签到、扫码登录、多账号、多机器人、补签、备份恢复、WebDAV 自动建目录、GitHub 仓库诊断、安全加固（会话签名/限速/响应头/出网护栏）、长期记忆（注入/去重/作用域）、账号自动回复配置均正常")

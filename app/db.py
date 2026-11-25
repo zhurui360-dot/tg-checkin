@@ -57,6 +57,23 @@ DEFAULTS: dict[str, str] = {
     "ai_min_interval": "3",
     # 出网代理，留空表示直连。接口只对大陆网络开放、而主机在境外时填这里。
     "ai_proxy": os.getenv("AI_PROXY", "").strip(),
+    # ---------- 智能体记忆 ----------
+    "memory_enabled": "1",        # 把长期记忆注入上下文
+    "memory_learn": "1",          # 聊完自动提炼值得记住的事
+    "memory_max_notes": "8",      # 每次最多注入几条
+    # ---------- 用自己账号自动回复（Userbot） ----------
+    "assistant_enabled": "0",     # 默认关：自动回复会真的以你的身份发消息
+    "assistant_account_id": "",   # 留空用第一个可用账号
+    "assistant_agent_id": "",     # 留空跟随默认智能体
+    "assistant_private": "1",     # 私聊
+    "assistant_groups": "0",      # 群聊
+    "assistant_trigger": "mention",  # mention / reply / all
+    "assistant_whitelist": "",    # 只回这些会话，逗号分隔
+    "assistant_blacklist": "",
+    "assistant_ignore_bots": "1",
+    "assistant_cooldown": "5",    # 同会话最短间隔（秒）
+    "assistant_max_per_hour": "30",
+    "assistant_quiet": "",        # 免打扰时段，例如 23:30-08:00
     # Telegram Business 绑定信息（JSON），由程序写入，不需要手动配置
     "business_connections": "",
     # 机器人待过的群（JSON），入群事件自动记录，面板可一键填入
@@ -183,6 +200,17 @@ def init_db() -> None:
                 ts         TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             CREATE INDEX IF NOT EXISTS idx_ai_chat ON ai_messages(chat_id, id DESC);
+            CREATE TABLE IF NOT EXISTS ai_notes (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_id   INTEGER NOT NULL DEFAULT 0,
+                scope      TEXT NOT NULL DEFAULT 'global',
+                scope_key  TEXT NOT NULL DEFAULT '',
+                content    TEXT NOT NULL,
+                source     TEXT NOT NULL DEFAULT 'auto',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                used_at    TEXT NOT NULL DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_notes_agent ON ai_notes(agent_id, scope, scope_key);
             """
         )
         for key, value in DEFAULTS.items():
@@ -631,6 +659,103 @@ def clear_ai_messages(bot_id: int | None = None) -> None:
             conn.execute("DELETE FROM ai_messages")
         else:
             conn.execute("DELETE FROM ai_messages WHERE bot_id=?", (int(bot_id),))
+
+
+# ---------------- 长期记忆（ai_notes） ----------------
+# scope: global 全局 / chat 某个会话 / user 某个人。智能体之间互不串味（agent_id 区分）。
+
+def add_note(
+    agent_id: int,
+    scope: str,
+    scope_key: str,
+    content: str,
+    source: str = "auto",
+) -> int:
+    with connection() as conn:
+        cursor = conn.execute(
+            "INSERT INTO ai_notes(agent_id, scope, scope_key, content, source) VALUES(?,?,?,?,?)",
+            (int(agent_id or 0), scope, str(scope_key or "")[:120], content[:400], source),
+        )
+        return int(cursor.lastrowid or 0)
+
+
+def list_notes(
+    agent_id: int | None = None,
+    scope: str | None = None,
+    scope_key: str | None = None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    sql = "SELECT * FROM ai_notes WHERE 1=1"
+    params: list[Any] = []
+    if agent_id is not None:
+        sql += " AND agent_id=?"
+        params.append(int(agent_id))
+    if scope:
+        sql += " AND scope=?"
+        params.append(scope)
+    if scope_key is not None:
+        sql += " AND scope_key=?"
+        params.append(str(scope_key))
+    sql += " ORDER BY id DESC LIMIT ?"
+    params.append(max(1, min(int(limit), 500)))
+    with connection() as conn:
+        return [dict(row) for row in conn.execute(sql, params).fetchall()]
+
+
+def note_pool(agent_id: int, chat_id: str, author: str) -> list[dict[str, Any]]:
+    """拼上下文时用的候选池：全局 + 当前会话 + 当前这个人。"""
+    with connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM ai_notes WHERE agent_id=? AND ("
+            "(scope='global') OR (scope='chat' AND scope_key=?) OR (scope='user' AND scope_key=?)"
+            ") ORDER BY id DESC LIMIT 300",
+            (int(agent_id or 0), str(chat_id), str(author or "")[:120]),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def delete_note(note_id: int) -> bool:
+    with connection() as conn:
+        cursor = conn.execute("DELETE FROM ai_notes WHERE id=?", (int(note_id),))
+        return cursor.rowcount > 0
+
+
+def clear_notes(agent_id: int, scope: str = "", scope_key: str = "") -> int:
+    sql = "DELETE FROM ai_notes WHERE agent_id=?"
+    params: list[Any] = [int(agent_id)]
+    if scope:
+        sql += " AND scope=?"
+        params.append(scope)
+    if scope_key:
+        sql += " AND scope_key=?"
+        params.append(scope_key)
+    with connection() as conn:
+        cursor = conn.execute(sql, params)
+        return int(cursor.rowcount or 0)
+
+
+def touch_notes(note_ids: list[int]) -> None:
+    if not note_ids:
+        return
+    marks = ",".join("?" for _ in note_ids)
+    with connection() as conn:
+        conn.execute(
+            f"UPDATE ai_notes SET used_at=CURRENT_TIMESTAMP WHERE id IN ({marks})",
+            [int(i) for i in note_ids],
+        )
+
+
+def note_stats(agent_id: int) -> dict[str, int]:
+    with connection() as conn:
+        rows = conn.execute(
+            "SELECT scope, COUNT(*) AS n FROM ai_notes WHERE agent_id=? GROUP BY scope",
+            (int(agent_id),),
+        ).fetchall()
+    data = {"total": 0, "global": 0, "chat": 0, "user": 0}
+    for row in rows:
+        data[str(row["scope"])] = int(row["n"])
+        data["total"] += int(row["n"])
+    return data
 
 
 def ai_stats(bot_id: int | None = None) -> dict[str, int]:

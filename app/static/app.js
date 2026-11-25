@@ -17,6 +17,8 @@
     modelChoices: [],
     pickedModels: new Set(),
     modelProbeKey: "",
+    memoryAgentId: null,
+    memoryFilled: false,
     settingsFilled: false,
     backupFilled: false,
     modalHandler: null,
@@ -660,6 +662,171 @@
 
   // ---------- 设置 ----------
 
+  // ---------- 账号自动回复 ----------
+
+  function assistantScopeOf(a) {
+    if (a.private && a.groups) return "both";
+    if (a.groups) return "groups";
+    return "private";
+  }
+
+  function renderAssistant(a) {
+    const form = $("assistantForm");
+    if (!form || !a) return;
+    const accSel = $("assistantAccountSelect");
+    if (accSel) {
+      const current = String(a.account_id || "");
+      accSel.innerHTML = `<option value="">默认账号</option>` + state.accounts.map((item) =>
+        `<option value="${item.id}">${esc(item.name || item.phone || "账号" + item.id)}${item.authorized ? "" : "（未登录）"}</option>`
+      ).join("");
+      accSel.value = current;
+    }
+    const agentSel = $("assistantAgentSelect");
+    if (agentSel) {
+      agentSel.innerHTML = `<option value="">跟随默认智能体</option>` + state.agents.map((item) =>
+        `<option value="${item.id}">${esc(item.name)}</option>`
+      ).join("");
+      agentSel.value = String(a.agent_id || "");
+    }
+    form.elements.assistant_enabled.value = a.enabled ? "1" : "0";
+    form.elements.assistant_scope.value = assistantScopeOf(a);
+    form.elements.assistant_trigger.value = a.trigger || "mention";
+    form.elements.assistant_ignore_bots.value = a.ignore_bots ? "1" : "0";
+    form.elements.assistant_cooldown.value = a.cooldown || "5";
+    form.elements.assistant_max_per_hour.value = a.max_per_hour || "30";
+    form.elements.assistant_whitelist.value = a.whitelist || "";
+    form.elements.assistant_blacklist.value = a.blacklist || "";
+    form.elements.assistant_quiet.value = a.quiet || "";
+
+    const badge = $("assistantBadge");
+    if (badge) {
+      if (a.running && a.connected) {
+        badge.textContent = "运行中";
+        badge.className = "badge ok";
+      } else if (a.running) {
+        badge.textContent = "连接中";
+        badge.className = "badge warn";
+      } else if (a.enabled) {
+        badge.textContent = "已开启 · 未运行";
+        badge.className = "badge warn";
+      } else {
+        badge.textContent = "未启动";
+        badge.className = "badge";
+      }
+    }
+    const text = $("assistantStatusText");
+    if (text) {
+      const bits = [];
+      if (a.me) bits.push(`当前账号：${a.me}`);
+      else if (a.account_name) bits.push(`账号：${a.account_name}`);
+      if (a.replies) bits.push(`已替你回复 ${a.replies} 条`);
+      if (a.skipped) bits.push(`限流跳过 ${a.skipped} 条`);
+      if (a.last_event) bits.push(`最近：${a.last_event}`);
+      if (a.last_error) bits.push(`错误：${a.last_error}`);
+      if (!a.has_session) bits.push("这个账号还没有登录会话，先到「账号与登录」扫码");
+      text.textContent = bits.length ? bits.join(" · ") : "还没有启动过。";
+    }
+  }
+
+  async function saveAssistant() {
+    const form = $("assistantForm");
+    const scope = form.elements.assistant_scope.value;
+    const body = {
+      assistant_enabled: form.elements.assistant_enabled.value,
+      assistant_account_id: form.elements.assistant_account_id.value,
+      assistant_agent_id: form.elements.assistant_agent_id.value,
+      assistant_private: scope === "groups" ? "0" : "1",
+      assistant_groups: scope === "private" ? "0" : "1",
+      assistant_trigger: form.elements.assistant_trigger.value,
+      assistant_ignore_bots: form.elements.assistant_ignore_bots.value,
+      assistant_cooldown: form.elements.assistant_cooldown.value,
+      assistant_max_per_hour: form.elements.assistant_max_per_hour.value,
+      assistant_whitelist: form.elements.assistant_whitelist.value,
+      assistant_blacklist: form.elements.assistant_blacklist.value,
+      assistant_quiet: form.elements.assistant_quiet.value,
+    };
+    await api("/api/settings", { method: "PUT", body });
+    toast(body.assistant_enabled === "1" ? "已保存，账号回复已启动" : "已保存，账号回复已关闭");
+    await loadBootstrap();
+  }
+
+  // ---------- 智能体记忆 ----------
+
+  function renderMemoryPicker() {
+    const sel = $("memoryAgentSelect");
+    if (!sel) return;
+    const current = state.memoryAgentId != null ? String(state.memoryAgentId) : sel.value;
+    if (!state.agents.length) {
+      sel.innerHTML = `<option value="0">还没有智能体</option>`;
+      state.memoryAgentId = 0;
+    } else {
+      sel.innerHTML = state.agents.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join("");
+      if (current) sel.value = current;
+      if (!sel.value) sel.value = String(state.agents[0].id);
+      state.memoryAgentId = Number(sel.value || 0);
+    }
+    if (!state.memoryFilled) {
+      const s = (state.data && state.data.settings) || {};
+      if ($("memoryEnabled")) $("memoryEnabled").value = s.memory_enabled ?? "1";
+      if ($("memoryLearn")) $("memoryLearn").value = s.memory_learn ?? "1";
+      state.memoryFilled = true;
+    }
+  }
+
+  async function loadMemory() {
+    const agentId = state.memoryAgentId || 0;
+    const scope = $("memoryScopeFilter") ? $("memoryScopeFilter").value : "";
+    const data = await api(`/api/memory?agent_id=${agentId}${scope ? "&scope=" + encodeURIComponent(scope) : ""}`);
+    renderMemory(data);
+  }
+
+  function renderMemory(data) {
+    const list = $("memoryList");
+    if (!list) return;
+    const notes = (data && data.notes) || [];
+    const stats = (data && data.stats) || {};
+    if ($("memorySummary")) {
+      $("memorySummary").textContent =
+        `共 ${stats.total || 0} 条 · 全局 ${stats.global || 0} / 会话 ${stats.chat || 0} / 人 ${stats.user || 0}`;
+    }
+    if (!notes.length) {
+      list.innerHTML = `<p class="muted">这个智能体还没有记忆。多聊几轮，或者在上面手动加一条。</p>`;
+      return;
+    }
+    const label = { global: "全局", chat: "会话", user: "人" };
+    list.innerHTML = notes.map((n) => `
+      <div class="memory-item">
+        <span class="memory-scope">${label[n.scope] || "全局"}</span>
+        <span class="memory-text">${esc(n.content)}</span>
+        ${n.scope_key ? `<span class="memory-key muted">${esc(n.scope_key)}</span>` : ""}
+        <button class="link-btn danger" data-note="${n.id}">删除</button>
+      </div>`).join("");
+  }
+
+  async function addMemory() {
+    const content = $("memoryContent").value.trim();
+    if (!content) { toast("先写点要记住的内容", "err"); return; }
+    const scope = $("memoryScope").value;
+    const key = $("memoryScopeKey").value.trim();
+    if (scope !== "global" && !key) { toast("按人或按会话记的时候，要填对方名字或会话 ID", "err"); return; }
+    await api("/api/memory", {
+      method: "POST",
+      body: { agent_id: state.memoryAgentId || 0, content, scope, scope_key: key },
+    });
+    $("memoryContent").value = "";
+    toast("记住了");
+    await loadMemory();
+    await loadBootstrap();
+  }
+
+  async function saveMemoryFlags() {
+    await api("/api/settings", {
+      method: "PUT",
+      body: { memory_enabled: $("memoryEnabled").value, memory_learn: $("memoryLearn").value },
+    });
+    toast("记忆设置已保存");
+  }
+
   function fillSettings(data) {
     if (state.settingsFilled) return;
     const form = $("settingsForm");
@@ -920,8 +1087,11 @@
     renderAccounts();
     renderBots();
     renderAgents();
+    renderAssistant(data.assistant);
+    renderMemoryPicker();
     renderGroupSelects();
     loadKnownChats();
+    loadMemory().catch(() => {});
     refreshBots();
     ensureCredentials();
   }
@@ -1710,6 +1880,113 @@
           await refreshAgents();
           await loadBootstrap();
         } catch (err) { toast(err.message, "err"); }
+      }
+    });
+
+    $("assistantForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const btn = e.target.querySelector('button[type="submit"]');
+      btn.disabled = true;
+      try {
+        await saveAssistant();
+      } catch (err) {
+        toast(err.message, "err");
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    $("assistantRestartBtn").addEventListener("click", async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      try {
+        const result = await api("/api/assistant/restart", { method: "POST" });
+        if (result.ok === false) toast(result.error || "启动失败", "err");
+        else toast("已重新连接账号");
+        await loadBootstrap();
+      } catch (err) {
+        toast(err.message, "err");
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    if ($("agentPresets")) {
+      $("agentPresets").addEventListener("click", (e) => {
+        const btn = e.target.closest("button[data-base]");
+        if (!btn) return;
+        const form = $("agentForm");
+        form.elements.base_url.value = btn.dataset.base || "";
+        if (btn.dataset.model) form.elements.model.value = btn.dataset.model;
+        toast(`${btn.textContent.trim()} 的接口地址已填好，补上 Key 就能读模型`);
+      });
+    }
+
+    if ($("memoryAddBtn")) {
+      $("memoryAddBtn").addEventListener("click", async (e) => {
+        e.currentTarget.disabled = true;
+        try {
+          await addMemory();
+        } catch (err) {
+          toast(err.message, "err");
+        } finally {
+          e.currentTarget.disabled = false;
+        }
+      });
+    }
+
+    if ($("memoryClearBtn")) {
+      $("memoryClearBtn").addEventListener("click", async (e) => {
+        const agent = state.agents.find((a) => Number(a.id) === Number(state.memoryAgentId));
+        if (!window.confirm(`清空「${agent ? agent.name : "该智能体"}」的全部记忆？`)) return;
+        e.currentTarget.disabled = true;
+        try {
+          const result = await api(`/api/memory?agent_id=${state.memoryAgentId || 0}`, { method: "DELETE" });
+          toast(`已清掉 ${result.removed || 0} 条记忆`);
+          await loadMemory();
+          await loadBootstrap();
+        } catch (err) {
+          toast(err.message, "err");
+        } finally {
+          e.currentTarget.disabled = false;
+        }
+      });
+    }
+
+    if ($("memoryList")) {
+      $("memoryList").addEventListener("click", async (e) => {
+        const btn = e.target.closest("button[data-note]");
+        if (!btn) return;
+        btn.disabled = true;
+        try {
+          await api(`/api/memory/${btn.dataset.note}`, { method: "DELETE" });
+          await loadMemory();
+          await loadBootstrap();
+        } catch (err) {
+          toast(err.message, "err");
+          btn.disabled = false;
+        }
+      });
+    }
+
+    if ($("memoryAgentSelect")) {
+      $("memoryAgentSelect").addEventListener("change", (e) => {
+        state.memoryAgentId = Number(e.target.value || 0);
+        loadMemory().catch((err) => toast(err.message, "err"));
+      });
+    }
+
+    if ($("memoryScopeFilter")) {
+      $("memoryScopeFilter").addEventListener("change", () => {
+        loadMemory().catch((err) => toast(err.message, "err"));
+      });
+    }
+
+    ["memoryEnabled", "memoryLearn"].forEach((id) => {
+      if ($(id)) {
+        $(id).addEventListener("change", () => {
+          saveMemoryFlags().catch((err) => toast(err.message, "err"));
+        });
       }
     });
 
