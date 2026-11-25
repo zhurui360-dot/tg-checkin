@@ -74,10 +74,11 @@ def _chat_tags(message: Any, chat: Any) -> set[str]:
 
 
 def _in_list(tags: set[str], raw: str) -> bool:
+    """名单里可以写 id、@username 或群标题，命中任意一种即算匹配。"""
     items = _targets(raw)
     if not items:
         return False
-    return any(item in tags for item in items)
+    return any(item in tags or f"@{item}" in tags for item in items)
 
 
 def _quiet_now(raw: str) -> bool:

@@ -850,7 +850,8 @@ with TestClient(app) as client:
     from app import assistant as _as
     assert _as._quiet_now("") is False
     assert _as._quiet_now("00:00-23:59") is True
-    assert _as._in_list({"@alice", "-1001"}, "@alice, -1002") is True
+    assert _as._in_list({"alice", "-1001"}, "@alice, -1002") is True
+    assert _as._in_list({"@alice"}, "@alice") is True
     assert _as._in_list({"@bob"}, "@alice") is False
 
 print("冒烟测试通过：健康检查、鉴权、群组 CRUD、cron 校验、设置保存、保活自检、AI 机器人、多智能体、机器人签到、扫码登录、多账号、多机器人、补签、备份恢复、WebDAV 自动建目录、GitHub 仓库诊断、安全加固（会话签名/限速/响应头/出网护栏）、长期记忆（注入/去重/作用域）、账号自动回复配置均正常")
