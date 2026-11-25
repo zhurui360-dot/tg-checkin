@@ -19,7 +19,6 @@ from . import (
     backup,
     bot,
     db,
-    keepalive,
     memory,
     scheduler,
     security,
@@ -58,7 +57,6 @@ async def lifespan(app: FastAPI):
     else:
         scheduler.start()
         scheduler.start_catchup()
-        keepalive.start()
         bot.start()
         backup.start_auto()
         if db.get_setting("assistant_enabled", "0") == "1":
@@ -70,7 +68,6 @@ async def lifespan(app: FastAPI):
         scheduler.stop_catchup()
         backup.stop_auto()
         bot.stop()
-        keepalive.stop()
         scheduler.shutdown()
 
 
@@ -80,13 +77,9 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 @app.middleware("http")
 async def guard_requests(request: Request, call_next):
-    """统一入口守卫：记公网地址、限体积、防 CSRF、补安全响应头。"""
+    """统一入口守卫：限体积、防 CSRF、补安全响应头、静态资源回源校验。"""
     path = request.url.path
-    host = request.headers.get("host", "")
     scheme = request.headers.get("x-forwarded-proto", "").split(",")[0].strip()
-    if host and "keepalive" not in path:
-        # 反向代理后面 request.url.scheme 恒为 http，真实协议在 X-Forwarded-Proto
-        keepalive.learn_from_request(scheme or request.url.scheme, host)
 
     # 备份恢复会带一份完整 JSON，正常几十 KB；超过 32MB 直接拒，别让内存被吃光
     if request.method in ("POST", "PUT", "PATCH"):
@@ -257,9 +250,6 @@ def bootstrap(_: None = Depends(require_auth)) -> dict[str, Any]:
             "using_default_password": _panel_password() == "admin123",
             "session_set": bool(settings.get("session_string", "")) or authorized,
             "account_name": (account_default or {}).get("name", "") or settings.get("account_name", ""),
-            "keepalive_enabled": settings.get("keepalive_enabled", "0"),
-            "keepalive_interval": settings.get("keepalive_interval", "300"),
-            "keepalive_url": settings.get("keepalive_url", ""),
             # 备份 / 恢复
             "backup_auto": settings.get("backup_auto", "0"),
             "backup_interval": settings.get("backup_interval", "12"),
@@ -341,7 +331,6 @@ def bootstrap(_: None = Depends(require_auth)) -> dict[str, Any]:
         "ai_agent_id": settings.get("ai_agent_id", ""),
         "catchup": scheduler.catchup_status(),
         "backup": backup.status(),
-        "keepalive": keepalive.status(),
         "bot": bot.status(),
         "assistant": assistant.status(),
         "memory": {
@@ -496,7 +485,7 @@ def delete_logs(_: None = Depends(require_auth)) -> dict[str, Any]:
 SETTING_KEYS = {
     "api_id", "api_hash", "phone", "proxy_url", "timezone", "retry_count",
     "retry_delay", "jitter", "notify_chat", "fail_keywords", "dry_run",
-    "panel_password", "keepalive_enabled", "keepalive_interval", "keepalive_url",
+    "panel_password",
     "checkin_mode", "catchup_enabled", "catchup_interval", "catchup_cooldown",
     # AI 机器人
     "bot_enabled", "bot_token", "bot_trigger", "ai_agent_id",
@@ -519,7 +508,7 @@ SETTING_KEYS = {
 
 BOT_NUMERIC_KEYS = {"ai_history_len", "ai_max_tokens", "ai_temperature", "ai_min_interval"}
 NUMERIC_SETTING_KEYS = {
-    "retry_count", "retry_delay", "jitter", "keepalive_interval",
+    "retry_count", "retry_delay", "jitter",
     "catchup_interval", "catchup_cooldown",
     "backup_interval", "backup_keep", "webdav_keep", "github_keep",
     "memory_max_notes", "assistant_cooldown", "assistant_max_per_hour",
@@ -626,8 +615,6 @@ def update_settings(body: dict[str, Any], _: None = Depends(require_auth)) -> di
         changed.add(key)
     if "timezone" in changed:
         scheduler.reload_jobs()
-    if changed & {"keepalive_enabled", "keepalive_interval", "keepalive_url"} and not STANDBY:
-        keepalive.restart()
     if changed & {"bot_enabled", "bot_token", "bot_trigger"} and not STANDBY:
         bot.restart()
     if changed & {"catchup_enabled"} and not STANDBY:
@@ -661,26 +648,6 @@ def update_settings(body: dict[str, Any], _: None = Depends(require_auth)) -> di
             except backup.BackupError as exc:
                 result["webdav"] = {"ok": False, "error": str(exc)}
     return result
-
-
-# ---------------- 保活自检 ----------------
-
-@app.get("/api/keepalive")
-def keepalive_status(_: None = Depends(require_auth)) -> dict[str, Any]:
-    return keepalive.status()
-
-
-@app.post("/api/keepalive/ping")
-def keepalive_ping_now(_: None = Depends(require_auth)) -> dict[str, Any]:
-    """立即执行一次自检，返回最新状态。"""
-    if not keepalive.enabled():
-        raise HTTPException(status_code=400, detail="保活未启用，请先在设置里打开")
-    if not keepalive.target_url():
-        raise HTTPException(
-            status_code=400,
-            detail="还没有探测到公网地址，请填写保活目标地址，或先用公网地址访问一次面板",
-        )
-    return keepalive.ping_now()
 
 
 # ---------------- AI 聊天机器人 ----------------
@@ -958,6 +925,53 @@ def assistant_restart(_: None = Depends(require_auth)) -> dict[str, Any]:
     if db.get_setting("assistant_enabled", "0") != "1":
         return {"ok": False, "error": "先打开「用我的账号自动回复」再启动", **assistant.status()}
     return {"ok": True, **assistant.restart()}
+
+
+@app.get("/api/assistant/log")
+def assistant_log(
+    limit: int = 80, action: str = "", _: None = Depends(require_auth)
+) -> dict[str, Any]:
+    """看每条消息被怎么处理了：回了、被哪条规则挡住的、还是报错了。"""
+    return {
+        "items": db.list_assistant_log(limit=limit, action=action),
+        "stats": db.assistant_log_stats(),
+    }
+
+
+@app.delete("/api/assistant/log")
+def assistant_log_clear(_: None = Depends(require_auth)) -> dict[str, Any]:
+    db.clear_assistant_log()
+    return {"ok": True, "stats": db.assistant_log_stats()}
+
+
+@app.post("/api/assistant/selftest")
+def assistant_selftest(body: dict[str, Any], _: None = Depends(require_auth)) -> dict[str, Any]:
+    """不走 Telegram，直接拿「当前设置 + 当前智能体」跑一遍判定和模型调用。
+
+    这样能分清到底卡在哪：网络、账号会话、过滤规则，还是模型接口。
+    """
+    text = str(body.get("text") or "").strip() or "你好，简单介绍一下你自己"
+    cfg = db.get_settings()
+    agent = assistant._agent_of(cfg)
+    if not agent:
+        raise HTTPException(status_code=400, detail="还没有可用的智能体，先到「AI 智能体」建一个")
+    try:
+        answer = assistant._answer(agent, "selftest", text, "自检", True)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"模型调用失败：{exc}") from exc
+    st = assistant.status()
+    return {
+        "ok": True,
+        "agent": agent.get("name"),
+        "model": agent.get("model"),
+        "question": text,
+        "answer": (answer or "").strip()[:2000],
+        "enabled": st.get("enabled"),
+        "running": st.get("running"),
+        "connected": st.get("connected"),
+        "me": st.get("me"),
+        "last_error": st.get("last_error"),
+    }
 
 
 @app.post("/api/bot/send")

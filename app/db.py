@@ -29,15 +29,12 @@ DEFAULTS: dict[str, str] = {
     "notify_chat": "",
     "fail_keywords": "",
     "dry_run": "0",
-    # 签到执行者：bot = 用机器人（Bot API，只要 token）；user = 用自己账号（Telethon，需要 api_id）
+    # 签到执行者：固定用已登录的账号（Telethon），不再走机器人
     "checkin_mode": os.getenv("CHECKIN_MODE", "").strip() or "user",
     # 补签：定时点没在线（容器被休眠/重启）时，上线后补一次，保证每天成功一次
     "catchup_enabled": "1",
     "catchup_interval": "600",
     "catchup_cooldown": "1800",
-    "keepalive_enabled": "1" if os.getenv("PUBLIC_URL", "").strip() else "0",
-    "keepalive_interval": "300",
-    "keepalive_url": os.getenv("PUBLIC_URL", "").strip(),
     "panel_password": os.getenv("PANEL_PASSWORD", "admin123"),
     # ---------- AI 聊天机器人 ----------
     "bot_enabled": "1" if os.getenv("BOT_TOKEN", "").strip() else "0",
@@ -200,6 +197,20 @@ def init_db() -> None:
                 ts         TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             CREATE INDEX IF NOT EXISTS idx_ai_chat ON ai_messages(chat_id, id DESC);
+            -- 账号自动回复的处理流水：每条进来的消息都留一行，记「回了 / 为什么没回」。
+            -- 没有这张表时，过滤是静默的，用户只能看到「没回复」而查不出原因。
+            CREATE TABLE IF NOT EXISTS assistant_log (
+                id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id  TEXT NOT NULL DEFAULT '',
+                chat_title TEXT NOT NULL DEFAULT '',
+                author   TEXT NOT NULL DEFAULT '',
+                preview  TEXT NOT NULL DEFAULT '',
+                action   TEXT NOT NULL DEFAULT '',   -- replied / skipped / error
+                reason   TEXT NOT NULL DEFAULT '',
+                detail   TEXT NOT NULL DEFAULT '',
+                ts       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_assistant_log ON assistant_log(id DESC);
             CREATE TABLE IF NOT EXISTS ai_notes (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 agent_id   INTEGER NOT NULL DEFAULT 0,
@@ -266,6 +277,10 @@ def _migrate_columns(conn: sqlite3.Connection) -> None:
     # 免得面板上还显示着用不到的机器人绑定。
     conn.execute("UPDATE settings SET value='user' WHERE key='checkin_mode' AND value<>'user'")
     conn.execute("UPDATE groups SET mode='user' WHERE mode<>'user'")
+
+    # 保活自检功能已移除，顺手把老配置清掉，避免备份/导出里还带着无用的键
+    conn.execute("DELETE FROM settings WHERE key IN "
+                 "('keepalive_enabled','keepalive_interval','keepalive_url')")
 
 
 def _seed_identities(conn: sqlite3.Connection) -> None:
@@ -664,6 +679,70 @@ def clear_ai_messages(bot_id: int | None = None) -> None:
             conn.execute("DELETE FROM ai_messages")
         else:
             conn.execute("DELETE FROM ai_messages WHERE bot_id=?", (int(bot_id),))
+
+
+# ---------------- 账号自动回复处理流水（assistant_log） ----------------
+
+def add_assistant_log(
+    chat_id: str,
+    chat_title: str,
+    author: str,
+    preview: str,
+    action: str,
+    reason: str = "",
+    detail: str = "",
+) -> None:
+    """记一条「收到消息后怎么处理的」。action: replied / skipped / error。"""
+    with connection() as conn:
+        conn.execute(
+            "INSERT INTO assistant_log(chat_id, chat_title, author, preview, action, reason, detail) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (
+                str(chat_id)[:40],
+                str(chat_title)[:120],
+                str(author)[:80],
+                str(preview)[:200],
+                str(action)[:16],
+                str(reason)[:120],
+                str(detail)[:500],
+            ),
+        )
+        # 只留最近 500 条，跑久了不会把库撑大
+        conn.execute(
+            "DELETE FROM assistant_log WHERE id NOT IN "
+            "(SELECT id FROM assistant_log ORDER BY id DESC LIMIT 500)"
+        )
+
+
+def list_assistant_log(limit: int = 80, action: str = "") -> list[dict[str, Any]]:
+    limit = max(1, min(int(limit), 500))
+    sql = "SELECT * FROM assistant_log"
+    params: list[Any] = []
+    if action:
+        sql += " WHERE action=?"
+        params.append(action)
+    sql += " ORDER BY id DESC LIMIT ?"
+    params.append(limit)
+    with connection() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [dict(row) for row in rows]
+
+
+def clear_assistant_log() -> None:
+    with connection() as conn:
+        conn.execute("DELETE FROM assistant_log")
+
+
+def assistant_log_stats() -> dict[str, Any]:
+    with connection() as conn:
+        rows = conn.execute(
+            "SELECT action, COUNT(*) AS n FROM assistant_log GROUP BY action"
+        ).fetchall()
+        last = conn.execute("SELECT ts FROM assistant_log ORDER BY id DESC LIMIT 1").fetchone()
+    stats = {str(row["action"]): int(row["n"]) for row in rows}
+    stats["total"] = sum(stats.values())
+    stats["last_ts"] = last["ts"] if last else ""
+    return stats
 
 
 # ---------------- 长期记忆（ai_notes） ----------------

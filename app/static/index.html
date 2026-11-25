@@ -221,23 +221,15 @@
             <label class="field"><span>每日补签（上线即补）</span><select name="catchup_enabled"><option value="1">开启（推荐）</option><option value="0">关闭</option></select></label>
             <label class="field"><span>补签检查间隔（秒，120-3600）</span><input name="catchup_interval" type="number" min="120" max="3600" value="600"></label>
             <label class="field"><span>同群补签冷却（秒）</span><input name="catchup_cooldown" type="number" min="0" value="1800"></label>
-            <label class="field"><span>保活自检</span><select name="keepalive_enabled"><option value="0">关闭</option><option value="1">开启（定时请求自身地址）</option></select></label>
-            <label class="field"><span>保活间隔（秒，最小 60）</span><input name="keepalive_interval" type="number" min="60" max="3600" value="300"></label>
-            <label class="field span-2"><span>保活目标地址（留空自动探测）</span><input name="keepalive_url" placeholder="https://你的域名，程序会请求该地址的 /health"></label>
             <div class="span-2 form-actions">
               <button type="submit" class="btn primary">保存设置</button>
               <button type="button" class="btn" id="catchupRunBtn">立即补签一次</button>
-              <button type="button" class="btn" id="keepalivePingBtn">立即自检</button>
               <button type="button" class="btn" id="exportConfigBtn">导出配置（含登录会话）</button>
             </div>
           </form>
           <div class="notice" id="catchupNotice">
             <strong>补签状态</strong>
             <p id="catchupText">加载中…</p>
-          </div>
-          <div class="notice" id="keepaliveNotice">
-            <strong>保活状态</strong>
-            <p id="keepaliveText">加载中…</p>
           </div>
         </div>
         <div class="notice wide">
@@ -488,9 +480,35 @@
             <div class="span-2 form-actions">
               <button type="submit" class="btn primary">保存并应用</button>
               <button type="button" class="btn" id="assistantRestartBtn">重连账号</button>
+              <button type="button" class="btn" id="assistantSelftestBtn">自检（不经过 Telegram）</button>
             </div>
           </form>
           <p id="assistantStatusText" class="muted" style="margin:14px 0 0">加载中…</p>
+          <div class="notice" id="assistantSelftestBox" style="display:none" hidden>
+            <strong>自检结果</strong>
+            <p id="assistantSelftestText"></p>
+          </div>
+
+          <div class="card-head" style="margin-top:18px">
+            <h3 style="font-size:15px">处理记录</h3>
+            <div class="filter-bar">
+              <select id="assistantLogFilter" class="btn small">
+                <option value="">全部</option>
+                <option value="replied">已回复</option>
+                <option value="skipped">被跳过</option>
+                <option value="error">出错</option>
+              </select>
+              <button type="button" class="btn small" id="assistantLogRefresh">刷新</button>
+              <button type="button" class="btn small" id="assistantLogClear">清空</button>
+            </div>
+          </div>
+          <p class="muted" style="margin:6px 0 10px">每条收到的消息都会在这里留一行。「被跳过」会写明是被哪条规则挡住的——没回消息时先看这里。</p>
+          <div class="table-wrap" style="max-height:340px;overflow:auto">
+            <table>
+              <thead><tr><th>时间</th><th>会话</th><th>内容</th><th>结果</th><th>说明</th></tr></thead>
+              <tbody id="assistantLogBody"></tbody>
+            </table>
+          </div>
         </div>
 
         <div class="card">

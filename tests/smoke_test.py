@@ -52,29 +52,14 @@ with TestClient(app) as client:
     assert client.delete(f"/api/groups/{group_id}").status_code == 200
     assert client.get("/api/bootstrap").json()["stats"]["groups"] == 0
 
-    # 保活：默认关闭时应拒绝立即自检；开启后能探测到公网地址并通过校验
-    ka = client.get("/api/keepalive").json()
-    assert ka["enabled"] in (True, False) and "interval" in ka
-    assert client.post("/api/keepalive/ping").status_code == 400
-
-    assert client.put("/api/settings", json={
-        "keepalive_enabled": "1",
-        "keepalive_interval": "600",
-        "keepalive_url": "http://127.0.0.1:9/health",
-    }).status_code == 200
-    after = client.get("/api/keepalive").json()
-    assert after["enabled"] is True and after["interval"] == 600, after
-    assert after["url"] == "http://127.0.0.1:9/health", after
-
-    # 地址不可达时应记录失败而不是抛 500
-    ping = client.post("/api/keepalive/ping")
-    assert ping.status_code == 200, ping.text
-    assert ping.json()["last_ok"] is False
-    assert ping.json()["fail_streak"] >= 1
-
-    # 非法间隔要落到合法区间（低于 60 秒被抬到 60）
-    assert client.put("/api/settings", json={"keepalive_interval": "10"}).status_code == 200
-    assert client.get("/api/keepalive").json()["interval"] == 60
+    # 保活自检功能已移除：接口不再存在，设置里也不再回显这三个键
+    assert client.get("/api/keepalive").status_code == 404
+    assert client.post("/api/keepalive/ping").status_code == 404
+    settings_now = client.get("/api/bootstrap").json()["settings"]
+    assert not any(k.startswith("keepalive") for k in settings_now), settings_now
+    # 老配置里残留的键即使被提交也只当未知字段忽略，不会写回去
+    assert client.put("/api/settings", json={"keepalive_enabled": "1"}).status_code == 200
+    assert "keepalive_enabled" not in client.get("/api/bootstrap").json()["settings"]
 
     # ---------- AI 机器人（不发真实网络请求，只验证配置与状态流转） ----------
     bst = client.get("/api/bot/status").json()
@@ -907,6 +892,32 @@ with TestClient(app) as client:
     assert _as._in_list({"@alice"}, "@alice") is True
     assert _as._in_list({"@bob"}, "@alice") is False
 
+    # 处理记录：每条消息都要留痕，否则「没回复」查不出原因
+    assert _sdb.assistant_log_stats()["total"] == 0
+    _sdb.add_assistant_log("-1001", "测试群", "alice", "在吗", "skipped", "不在白名单")
+    _sdb.add_assistant_log("-1001", "测试群", "alice", "在吗", "replied", "已回复", "在的")
+    _sdb.add_assistant_log("-1001", "测试群", "alice", "在吗", "error", "AI 调用失败：超时")
+    stats = _sdb.assistant_log_stats()
+    assert stats["total"] == 3 and stats["replied"] == 1 and stats["skipped"] == 1 and stats["error"] == 1, stats
+
+    log_api = client.get("/api/assistant/log").json()
+    assert len(log_api["items"]) == 3, log_api
+    assert log_api["items"][0]["action"] == "error"  # 倒序，最新在前
+    assert len(client.get("/api/assistant/log?action=skipped").json()["items"]) == 1
+    assert client.get("/api/assistant/log?limit=2").json()["items"].__len__() == 2
+
+    # 流水只保留最近 500 条，跑久了不会撑库
+    for i in range(520):
+        _sdb.add_assistant_log("-1001", "群", "bob", f"第{i}条", "skipped", "测试")
+    assert _sdb.assistant_log_stats()["total"] == 500, _sdb.assistant_log_stats()
+
+    # 面板里「清空记录」
+    assert client.delete("/api/assistant/log").status_code == 200
+    assert _sdb.assistant_log_stats()["total"] == 0
+
+    # 自检接口：没有可用智能体时要给明确提示，而不是 500
+    assert client.post("/api/assistant/selftest", json={}).status_code in (200, 400)
+
     # ---------------- 大模型接入：地址纠错与限流 ----------------
     from app import bot as _ab
     assert _ab.normalize_base("https://api.deepseek.com/v1/") == "https://api.deepseek.com/v1"
@@ -926,4 +937,4 @@ with TestClient(app) as client:
     assert "429" in _ab._rate_limit_hint("slow down")
     assert _ab._is_retryable(429) and _ab._is_retryable(503) and not _ab._is_retryable(401)
 
-print("冒烟测试通过：健康检查、鉴权、群组 CRUD、cron 校验、设置保存、保活自检、AI 机器人、多智能体、机器人签到、扫码登录、多账号、多机器人、补签、备份恢复、WebDAV 自动建目录、GitHub 仓库诊断、安全加固（会话签名/限速/响应头/出网护栏）、长期记忆（注入/去重/作用域）、账号自动回复配置、大模型接入（地址纠错/返回格式兼容/限流提示）均正常")
+print("冒烟测试通过：健康检查、鉴权、群组 CRUD、cron 校验、设置保存、AI 机器人、多智能体、机器人签到、扫码登录、多账号、多机器人、补签、备份恢复、WebDAV 自动建目录、GitHub 仓库诊断、安全加固（会话签名/限速/响应头/出网护栏）、长期记忆（注入/去重/作用域）、账号自动回复配置、大模型接入（地址纠错/返回格式兼容/限流提示）均正常")

@@ -39,10 +39,28 @@ _state: dict[str, Any] = {
     "last_error": "",
     "replies": 0,
     "skipped": 0,
+    "seen": 0,
+    "last_skip": "",
 }
 
 MAX_REPLY_CHARS = 3800
 MAX_INPUT_CHARS = 1500
+
+
+def _skip(reason: str, *, chat_id: str = "", title: str = "", author: str = "", preview: str = "") -> None:
+    """记一条「没回」的原因。
+
+    以前这里是直接 return 的，用户只看到「没回复」，查不出到底哪条规则挡住的。
+    现在每条都落库 + 写进状态，面板上按时间倒序就能看到。
+    """
+    with _lock:
+        _state["skipped"] = int(_state.get("skipped", 0)) + 1
+        _state["last_skip"] = f"{time.strftime('%H:%M:%S')} {reason}"
+    try:
+        db.add_assistant_log(chat_id, title, author, preview, "skipped", reason)
+    except Exception as exc:  # 记日志本身不该影响主流程
+        log.debug("写处理流水失败：%s", exc)
+    log.info("跳过消息（%s）%s %s: %s", reason, title, author, preview[:60])
 
 
 def _cfg() -> dict[str, str]:
@@ -139,28 +157,38 @@ def _answer(agent: dict[str, Any] | None, chat_id: str, text: str, author: str, 
 
 async def _handle(client: Any, event: Any, me_id: int, me_username: str) -> None:
     cfg = _cfg()
-    if cfg.get("assistant_enabled") != "1":
-        return
     message = getattr(event, "message", None)
     if message is None:
         return
-    # 自己发的（包括手机端发的）绝对不能回，否则死循环
+    text = (getattr(message, "raw_text", "") or "").strip()
+
+    # 自己发的（包括手机端发的）绝对不能回，否则死循环。这类连日志都不记，太吵。
     if getattr(event, "out", False) or getattr(message, "out", False):
         return
     if getattr(message, "sender_id", None) == me_id:
         return
 
-    text = (getattr(message, "raw_text", "") or "").strip()
-    if not text or len(text) > MAX_INPUT_CHARS:
+    if cfg.get("assistant_enabled") != "1":
+        _skip("总开关是关的", preview=text)
+        return
+    if not text:
+        _skip("没有文本内容（图片/贴纸/文件不回）")
+        return
+    if len(text) > MAX_INPUT_CHARS:
+        _skip(f"文字太长（{len(text)} 字，上限 {MAX_INPUT_CHARS}）", preview=text)
         return
     if text.startswith("/"):
+        _skip("是 / 命令，不当聊天处理", preview=text)
         return
 
     chat = await event.get_chat()
     chat_id = str(getattr(chat, "id", "") or getattr(message, "chat_id", ""))
+    title = getattr(chat, "title", "") or getattr(chat, "first_name", "") or ""
     if not chat_id or chat_id == str(me_id):
-        return  # 收藏夹不回
+        _skip("是自己的收藏夹 / 无法确定会话", preview=text)
+        return
     if getattr(message, "is_channel", False) and not getattr(message, "is_group", False):
+        _skip("来自频道（不是群，也不是私聊）", chat_id=chat_id, title=title, preview=text)
         return
 
     sender = None
@@ -168,27 +196,46 @@ async def _handle(client: Any, event: Any, me_id: int, me_username: str) -> None
         sender = await event.get_sender()
     except Exception:
         sender = None
+    author = (
+        getattr(sender, "first_name", "")
+        or getattr(sender, "title", "")
+        or title
+        or "对方"
+    )
+
     if getattr(sender, "bot", False) and cfg.get("assistant_ignore_bots", "1") == "1":
+        _skip("对方是机器人，按设置忽略", chat_id=chat_id, title=title, author=author, preview=text)
         return
     if getattr(sender, "id", None) == me_id:
         return
 
     tags = _chat_tags(message, chat)
     if _in_list(tags, cfg.get("assistant_blacklist", "")):
+        _skip("命中黑名单", chat_id=chat_id, title=title, author=author, preview=text)
         return
     whitelist = cfg.get("assistant_whitelist", "")
     if _targets(whitelist) and not _in_list(tags, whitelist):
+        _skip(
+            f"不在白名单（当前白名单：{whitelist[:60]}）",
+            chat_id=chat_id, title=title, author=author, preview=text,
+        )
         return
     if _quiet_now(cfg.get("assistant_quiet", "")):
+        _skip(
+            f"处于免打扰时段（{cfg.get('assistant_quiet', '')}）",
+            chat_id=chat_id, title=title, author=author, preview=text,
+        )
         return
 
     is_private = bool(getattr(message, "is_private", False))
     is_group = bool(getattr(message, "is_group", False))
     if is_private:
         if cfg.get("assistant_private", "1") != "1":
+            _skip("私聊回复是关的（回复范围没勾私聊）", chat_id=chat_id, title=title, author=author, preview=text)
             return
     elif is_group:
         if cfg.get("assistant_groups", "0") != "1":
+            _skip("群聊回复是关的（回复范围没勾群聊）", chat_id=chat_id, title=title, author=author, preview=text)
             return
         trigger = cfg.get("assistant_trigger", "mention")
         mentioned = bool(getattr(message, "mentioned", False)) or (
@@ -202,42 +249,62 @@ async def _handle(client: Any, event: Any, me_id: int, me_username: str) -> None
             except Exception:
                 replied_to_me = False
         if trigger == "mention" and not (mentioned or replied_to_me):
+            _skip("群里没 @ 我、也不是回复我的消息", chat_id=chat_id, title=title, author=author, preview=text)
             return
         if trigger == "reply" and not replied_to_me:
+            _skip("设置成只在回复我的消息时回，这条不是", chat_id=chat_id, title=title, author=author, preview=text)
             return
     else:
+        _skip("既不是私聊也不是群聊", chat_id=chat_id, title=title, author=author, preview=text)
         return
 
     if not _allow(cfg, chat_id):
-        _state["skipped"] = int(_state.get("skipped", 0)) + 1
+        cooldown = cfg.get("assistant_cooldown", "5")
+        cap = cfg.get("assistant_max_per_hour", "30")
+        _skip(
+            f"触发了限流（同会话间隔 {cooldown} 秒 / 每小时最多 {cap} 条）",
+            chat_id=chat_id, title=title, author=author, preview=text,
+        )
         return
 
     agent = _agent_of(cfg)
-    author = (
-        getattr(sender, "first_name", "")
-        or getattr(sender, "title", "")
-        or getattr(chat, "title", "")
-        or getattr(chat, "first_name", "")
-        or "对方"
-    )
-    title = getattr(chat, "title", "") or author
-
     loop = asyncio.get_running_loop()
+    with _lock:
+        _state["seen"] = int(_state.get("seen", 0)) + 1
     try:
         answer = await loop.run_in_executor(None, _answer, agent, chat_id, text, author, is_private)
     except Exception as exc:
         _state["last_error"] = f"AI 调用失败：{exc}"[:200]
         log.warning("账号自动回复失败：%s", exc)
+        try:
+            db.add_assistant_log(chat_id, title, author, text, "error", f"AI 调用失败：{exc}"[:200])
+        except Exception:
+            pass
         return
     answer = (answer or "").strip()
     if not answer:
+        _skip("模型返回了空内容", chat_id=chat_id, title=title, author=author, preview=text)
         return
 
-    await client.send_message(chat, answer[:MAX_REPLY_CHARS], reply_to=getattr(message, "id", None))
+    try:
+        await client.send_message(chat, answer[:MAX_REPLY_CHARS], reply_to=getattr(message, "id", None))
+    except Exception as exc:
+        _state["last_error"] = f"发送失败：{exc}"[:200]
+        log.warning("账号回复发送失败：%s", exc)
+        try:
+            db.add_assistant_log(chat_id, title, author, text, "error", f"发送失败：{exc}"[:200])
+        except Exception:
+            pass
+        return
+
     _mark(chat_id)
     with _lock:
         _state["replies"] = int(_state.get("replies", 0)) + 1
         _state["last_event"] = f"{time.strftime('%H:%M:%S')} {title} · {author}"
+    try:
+        db.add_assistant_log(chat_id, title, author, text, "replied", "已回复", answer[:300])
+    except Exception:
+        pass
     scope_id = int(agent["id"]) if agent and agent.get("id") is not None else 0
     db.add_ai_message(chat_id, title, "user", author, text, bot_id=scope_id)
     db.add_ai_message(chat_id, title, "assistant", "me", answer, bot_id=scope_id)
@@ -364,6 +431,9 @@ def status() -> dict[str, Any]:
             "max_per_hour": cfg.get("assistant_max_per_hour", "30"),
             "quiet": cfg.get("assistant_quiet", ""),
             "has_session": bool(str((account or {}).get("session_string") or "").strip()),
+            "seen": int(data.get("seen", 0)),
+            "last_skip": data.get("last_skip", ""),
+            "log": db.assistant_log_stats(),
         }
     )
     return data

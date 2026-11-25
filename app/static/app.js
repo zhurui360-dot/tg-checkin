@@ -782,11 +782,70 @@
       if (a.me) bits.push(`当前账号：${a.me}`);
       else if (a.account_name) bits.push(`账号：${a.account_name}`);
       if (a.replies) bits.push(`已替你回复 ${a.replies} 条`);
-      if (a.skipped) bits.push(`限流跳过 ${a.skipped} 条`);
-      if (a.last_event) bits.push(`最近：${a.last_event}`);
+      if (a.skipped) bits.push(`跳过 ${a.skipped} 条`);
+      if (a.last_skip) bits.push(`最近跳过：${a.last_skip}`);
+      if (a.last_event) bits.push(`最近回复：${a.last_event}`);
       if (a.last_error) bits.push(`错误：${a.last_error}`);
       if (!a.has_session) bits.push("这个账号还没有登录会话，先到「账号与登录」扫码");
+      if (!a.enabled) bits.push("总开关是关闭的，不会回任何消息");
+      else if (!a.running) bits.push("开关开着但线程没跑起来，点「重连账号」");
       text.textContent = bits.length ? bits.join(" · ") : "还没有启动过。";
+    }
+  }
+
+  // ---------- 账号回复：处理记录 ----------
+
+  async function loadAssistantLog() {
+    const tbody = $("assistantLogBody");
+    if (!tbody) return;
+    const filter = $("assistantLogFilter") ? $("assistantLogFilter").value : "";
+    try {
+      const data = await api(`/api/assistant/log?limit=80${filter ? `&action=${filter}` : ""}`);
+      const items = data.items || [];
+      if (!items.length) {
+        tbody.innerHTML = `<tr><td colspan="5" class="muted">还没有记录。收到消息后这里会出现一行，写明是回了还是被哪条规则挡住了。</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = items.map((it) => {
+        const cls = it.action === "replied" ? "ok" : it.action === "error" ? "err" : "warn";
+        const label = it.action === "replied" ? "已回复" : it.action === "error" ? "出错" : "跳过";
+        const who = [it.chat_title, it.author].filter(Boolean).join(" · ");
+        return `<tr>
+          <td class="nowrap">${esc(String(it.ts || "").slice(5, 19))}</td>
+          <td>${esc(who || it.chat_id || "")}</td>
+          <td class="preview-cell">${esc(it.preview || "")}</td>
+          <td><span class="badge ${cls}">${label}</span></td>
+          <td class="preview-cell">${esc(it.reason || it.detail || "")}</td>
+        </tr>`;
+      }).join("");
+    } catch (err) {
+      tbody.innerHTML = `<tr><td colspan="5" class="muted">${esc(err.message)}</td></tr>`;
+    }
+  }
+
+  async function runAssistantSelftest() {
+    const btn = $("assistantSelftestBtn");
+    const box = $("assistantSelftestBox");
+    const out = $("assistantSelftestText");
+    btn.disabled = true;
+    btn.textContent = "自检中…";
+    try {
+      const data = await api("/api/assistant/selftest", { method: "POST", body: {} });
+      box.hidden = false;
+      box.style.display = "";
+      out.innerHTML =
+        `<b>账号：</b>${esc(data.me || "未连接")}（开关 ${data.enabled ? "开" : "关"} / 线程 ${data.running ? "运行" : "停"} / 连接 ${data.connected ? "正常" : "断开"}）<br>` +
+        `<b>智能体：</b>${esc(data.agent || "")} · ${esc(data.model || "")}<br>` +
+        `<b>问：</b>${esc(data.question)}<br><b>答：</b>${esc(data.answer)}`;
+      toast("自检通过，模型和智能体都正常", "ok");
+    } catch (err) {
+      box.hidden = false;
+      box.style.display = "";
+      out.textContent = `自检失败：${err.message}`;
+      toast(err.message, "err");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "自检（不经过 Telegram）";
     }
   }
 
@@ -894,7 +953,7 @@
     const form = $("settingsForm");
     const s = data.settings;
     ["timezone", "retry_count", "retry_delay", "jitter", "notify_chat", "fail_keywords",
-      "dry_run", "checkin_mode", "keepalive_enabled", "keepalive_interval", "keepalive_url",
+      "dry_run", "checkin_mode",
       "catchup_enabled", "catchup_interval", "catchup_cooldown"].forEach((key) => {
       if (form.elements[key]) form.elements[key].value = s[key] ?? "";
     });
@@ -914,25 +973,6 @@
     }
     box.textContent = `${info.running ? "检查线程运行中" : "检查线程未运行"} · 每 ${info.interval} 秒核对一次 · 同一群失败后冷却 ${info.cooldown} 秒。` +
       "判定条件：群组已启用 + 今天有计划时间已过 + 今天还没有成功记录。补签日志来源会标记为「补签」。";
-  }
-
-  function renderKeepalive(info) {
-    const box = $("keepaliveText");
-    if (!box) return;
-    if (!info || !info.url) {
-      box.textContent = info && info.enabled
-        ? "已开启，但还没探测到公网地址。请先用公网域名访问一次面板，或手动填写保活目标地址。"
-        : "未启用。若部署在会休眠的平台上，建议开启以避免调度器停止。";
-      return;
-    }
-    const stateText = info.enabled ? "已开启" : "已关闭";
-    const lastText = info.last_ping
-      ? `${info.last_ping} ${info.last_ok ? "成功" : "失败"}` + (info.last_status ? `（${info.last_status}）` : "")
-      : "尚未执行";
-    box.textContent = `${stateText} · 间隔 ${info.interval} 秒 · 目标 ${info.url} · 上次 ${lastText} · 成功 ${info.ok_count} 次` +
-      (info.fail_streak ? ` · 连续失败 ${info.fail_streak} 次` : "") +
-      "。注意：实例被平台停机后本进程的线程会一起停止，无法唤醒自己，" +
-      "真正防休眠请配置仓库里的外部定时任务（.github/workflows/keepalive.yml）。";
   }
 
   // ---------- 备份 / 云备份 ----------
@@ -1144,12 +1184,12 @@
     fillSettings(data);
     fillBackupForms(data);
     renderBackupStatus(data.backup);
-    renderKeepalive(data.keepalive);
     renderCatchup(data.catchup);
     renderAccounts();
     renderBots();
     renderAgents();
     renderAssistant(data.assistant);
+    loadAssistantLog().catch(() => {});
     renderMemoryPicker();
     renderGroupSelects();
     loadKnownChats();
@@ -1645,8 +1685,8 @@
       const form = e.currentTarget;
       const payload = {};
       ["timezone", "retry_count", "retry_delay", "jitter", "notify_chat", "fail_keywords",
-        "dry_run", "checkin_mode", "panel_password", "keepalive_enabled", "keepalive_interval",
-        "keepalive_url", "catchup_enabled", "catchup_interval", "catchup_cooldown"].forEach((key) => {
+        "dry_run", "checkin_mode", "panel_password",
+        "catchup_enabled", "catchup_interval", "catchup_cooldown"].forEach((key) => {
         if (form.elements[key]) payload[key] = form.elements[key].value.trim();
       });
       try {
@@ -1672,14 +1712,6 @@
         btn.disabled = false;
         btn.textContent = "立即补签一次";
       }
-    });
-
-    $("keepalivePingBtn").addEventListener("click", async () => {
-      try {
-        const info = await api("/api/keepalive/ping", { method: "POST" });
-        renderKeepalive(info);
-        toast(info.last_ok ? "自检成功，实例处于活跃状态" : `自检失败：${info.last_status}`, info.last_ok ? "ok" : "err");
-      } catch (err) { toast(err.message, "err"); }
     });
 
     $("exportConfigBtn").addEventListener("click", async () => {
@@ -2009,6 +2041,26 @@
         btn.disabled = false;
       }
     });
+
+    if ($("assistantSelftestBtn")) {
+      $("assistantSelftestBtn").addEventListener("click", runAssistantSelftest);
+    }
+    if ($("assistantLogRefresh")) {
+      $("assistantLogRefresh").addEventListener("click", () => loadAssistantLog());
+    }
+    if ($("assistantLogFilter")) {
+      $("assistantLogFilter").addEventListener("change", () => loadAssistantLog());
+    }
+    if ($("assistantLogClear")) {
+      $("assistantLogClear").addEventListener("click", async () => {
+        if (!confirm("清空全部处理记录？不影响其他数据。")) return;
+        try {
+          await api("/api/assistant/log", { method: "DELETE" });
+          await loadAssistantLog();
+          toast("已清空");
+        } catch (err) { toast(err.message, "err"); }
+      });
+    }
 
     if ($("agentPresets")) {
       $("agentPresets").addEventListener("click", (e) => {
