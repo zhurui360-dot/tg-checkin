@@ -1,8 +1,18 @@
 name: build
 
-# 推 main 或打 tag 时构建镜像并推到 GHCR。
-# NAS 那边用 watchtower 盯 latest 标签，有新镜像就自动重启容器——
-# 所以「改代码 → push」就是一次发布，不需要登 NAS。
+# push main 或打 tag 时构建镜像并推仓库。
+# NAS 那边由 watchtower 盯 latest 标签，有新镜像就自动重建容器——
+# 于是「改代码 → push」就是一次发布，不用登 NAS。
+#
+# 推两个仓库：
+#   GHCR（默认，零配置，用 GITHUB_TOKEN）→ ghcr.io/<owner>/<repo>
+#   Docker Hub（可选）→ docker.io/<user>/<repo>，配好 DOCKERHUB_USERNAME /
+#     DOCKERHUB_TOKEN 两个 secret 后自动启用；没配就整段跳过。
+#
+# 关键一：provenance / sbom 必须显式关掉。实测这台 NAS 的拉取器不认
+# buildx 默认附带的 attestation manifest —— 请求会直接返回 errno 52428803，
+# 连下载任务都不生成；而干净的 manifest 能正常拉。
+# 关键二：GHCR 包默认私有，必须 PATCH 成 public，否则 NAS 上匿名拉不到。
 on:
   push:
     branches: [main]
@@ -12,7 +22,9 @@ on:
   workflow_dispatch:
 
 env:
-  IMAGE: ghcr.io/${{ github.repository }}
+  GHCR_IMAGE: ghcr.io/${{ github.repository }}
+  DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+  DOCKERHUB_IMAGE: docker.io/${{ secrets.DOCKERHUB_USERNAME }}/${{ github.event.repository.name }}
 
 jobs:
   build:
@@ -26,7 +38,7 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      # PR 只验证能不能构建，不推镜像
+      # ---- 登录（PR 只验证构建，不登录也不推）----
       - name: 登录 GHCR
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
@@ -35,39 +47,78 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - id: meta
+      - name: 登录 Docker Hub
+        if: github.event_name != 'pull_request' && env.DOCKERHUB_USERNAME != ''
+        uses: docker/login-action@v3
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # ---- 标签 ----
+      - id: meta-ghcr
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.IMAGE }}
+          images: ${{ env.GHCR_IMAGE }}
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - uses: docker/build-push-action@v6
+      - id: meta-hub
+        if: env.DOCKERHUB_USERNAME != ''
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKERHUB_IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      # ---- 构建一次，再分头推 ----
+      - name: 构建
+        uses: docker/build-push-action@v6
         with:
           context: .
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          # amd64 覆盖绝大多数 NAS；要跑 ARM 设备就加 linux/arm64
+          load: true
+          tags: ${{ env.GHCR_IMAGE }}:latest
+          # amd64 覆盖绝大多数 NAS；要跑 ARM 设备就改成 linux/amd64,linux/arm64
           platforms: linux/amd64
+          # 这两行是 NAS 能拉取的前提，别删
+          provenance: false
+          sbom: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # GHCR 新建的包默认私有，watchtower 没有凭据就拉不下来。
-      # 这里直接改成 public，NAS 侧不用配 docker login 就能拉。
-      - name: 公开镜像包
+      - name: 推送 GHCR
+        if: github.event_name != 'pull_request'
+        run: |
+          set -e
+          echo "${{ steps.meta-ghcr.outputs.tags }}" | tr ',' '\n' | while read -r t; do
+            [ -n "$t" ] || continue
+            docker tag "${{ env.GHCR_IMAGE }}:latest" "$t"
+            docker push "$t"
+          done
+
+      - name: 推送 Docker Hub
+        if: github.event_name != 'pull_request' && env.DOCKERHUB_USERNAME != ''
+        run: |
+          set -e
+          echo "${{ steps.meta-hub.outputs.tags }}" | tr ',' '\n' | while read -r t; do
+            [ -n "$t" ] || continue
+            docker tag "${{ env.GHCR_IMAGE }}:latest" "$t"
+            docker push "$t"
+          done
+
+      - name: 把 GHCR 包设为 public
         if: github.event_name != 'pull_request'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          PKG="${GITHUB_REPOSITORY#*/}"
-          gh api --method PATCH \
-            -H "Accept: application/vnd.github+json" \
-            "/users/${GITHUB_REPOSITORY_OWNER}/packages/container/${PKG}" \
-            -f visibility=public \
-            && echo "已设为 public: $PKG" \
-            || echo "设置可见性失败，可稍后在 Packages 页面手动改为 public"
+          PKG="${{ github.event.repository.name }}"
+          OWNER="${{ github.repository_owner }}"
+          gh api --method PATCH "/user/packages/container/$PKG" -f visibility=public 2>/dev/null \
+            || gh api --method PATCH "/orgs/$OWNER/packages/container/$PKG" -f visibility=public 2>/dev/null \
+            || echo "包可见性设置失败（可能本来就是 public，或 token 权限不足）"
