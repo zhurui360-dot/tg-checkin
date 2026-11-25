@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import (
@@ -99,6 +99,10 @@ async def guard_requests(request: Request, call_next):
 
     response = await call_next(request)
     security.apply_headers(response, path, https=(scheme == "https"))
+    if path.startswith("/static/"):
+        # 静态资源每次都回源校验（ETag 命中还是 304，不费流量），
+        # 否则 CF 会把旧 JS/CSS 缓存住，面板更新后用户看到的还是旧界面
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
     return response
 
 
@@ -145,9 +149,26 @@ def mask(value: str, keep: int = 3) -> str:
 
 # ---------------- 页面 ----------------
 
+def _asset_version() -> str:
+    """静态资源版本戳：取 css/js 的修改时间。
+
+    面板更新后，浏览器和 Cloudflare 会继续用旧 JS，功能看着像坏了。
+    index.html 里引用资源时带上这个戳，内容一变 URL 就变，天然绕开缓存。
+    """
+    stamp = 0
+    for name in ("app.js", "style.css"):
+        try:
+            stamp = max(stamp, int((STATIC_DIR / name).stat().st_mtime))
+        except OSError:
+            continue
+    return str(stamp or __version__)
+
+
 @app.get("/", include_in_schema=False)
-def index() -> FileResponse:
-    return FileResponse(str(STATIC_DIR / "index.html"))
+def index() -> HTMLResponse:
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    # 页面本身由安全中间件标成 no-store，资源靠版本戳失效
+    return HTMLResponse(html.replace("__ASSET_V__", _asset_version()))
 
 
 @app.get("/health", include_in_schema=False)

@@ -789,6 +789,13 @@ with TestClient(app) as client:
     assert "frame-ancestors 'none'" in page.headers.get("content-security-policy", "")
     assert page.headers.get("cache-control") == "no-store"
     assert client.get("/health").headers.get("referrer-policy") == "no-referrer"
+    # 首页把静态资源版本戳填进去了，资源改了要让浏览器重新取
+    body = page.text
+    assert "__ASSET_V__" not in body, "首页的版本占位符没被替换"
+    assert "/static/app.js?v=" in body and "/static/style.css?v=" in body, body[:200]
+    asset = client.get("/static/app.js")
+    assert asset.status_code == 200
+    assert "no-cache" in asset.headers.get("cache-control", ""), asset.headers
 
     # 会话 token 被改一个字符就不该再通过
     good = client.cookies.get("tgck_session")
