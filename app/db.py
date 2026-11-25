@@ -30,7 +30,7 @@ DEFAULTS: dict[str, str] = {
     "fail_keywords": "",
     "dry_run": "0",
     # 签到执行者：bot = 用机器人（Bot API，只要 token）；user = 用自己账号（Telethon，需要 api_id）
-    "checkin_mode": os.getenv("CHECKIN_MODE", "").strip() or "bot",
+    "checkin_mode": os.getenv("CHECKIN_MODE", "").strip() or "user",
     # 补签：定时点没在线（容器被休眠/重启）时，上线后补一次，保证每天成功一次
     "catchup_enabled": "1",
     "catchup_interval": "600",
@@ -261,6 +261,11 @@ def _migrate_columns(conn: sqlite3.Connection) -> None:
 
     if "ai_agent_id" not in _columns(conn, "bots"):
         conn.execute("ALTER TABLE bots ADD COLUMN ai_agent_id INTEGER")
+
+    # 签到统一用已登录的账号，机器人不再参与签到。老的「机器人方式」一次性改成 user，
+    # 免得面板上还显示着用不到的机器人绑定。
+    conn.execute("UPDATE settings SET value='user' WHERE key='checkin_mode' AND value<>'user'")
+    conn.execute("UPDATE groups SET mode='user' WHERE mode<>'user'")
 
 
 def _seed_identities(conn: sqlite3.Connection) -> None:

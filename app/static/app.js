@@ -190,7 +190,6 @@
       tbody.innerHTML = `<tr><td colspan="7" class="empty">还没有配置群组，请在上方添加</td></tr>`;
       return;
     }
-    const globalMode = (data.settings && data.settings.checkin_mode) === "user" ? "我的账号" : "机器人";
     tbody.innerHTML = groups.map((g) => {
       let expressions = [];
       try { expressions = JSON.parse(g.schedule || "[]"); } catch (_) { expressions = [g.schedule]; }
@@ -200,12 +199,11 @@
         : `<div class="next-line">未启用</div>`;
 
       const acc = state.accounts.find((a) => a.id === g.account_id);
-      const bt = state.bots.find((b) => b.id === g.bot_id);
-      const modeText = g.mode === "user" ? "用账号" : g.mode === "bot" ? "用机器人" : `跟随全局（${globalMode}）`;
-      const who = [];
-      if (acc) who.push(esc(acc.name || acc.phone || `#${acc.id}`));
-      if (bt) who.push("@" + esc(bt.username || bt.name || bt.id));
-      const executor = who.length ? `${modeText}<div class="next-line">${who.join(" · ")}</div>` : modeText;
+      const defAcc = state.accounts.find((a) => a.default) || state.accounts[0];
+      const who = acc || defAcc;
+      const executor = who
+        ? `用账号<div class="next-line">${esc(who.name || who.phone || `#${who.id}`)}${acc ? "" : "（默认）"}</div>`
+        : `用账号<div class="next-line">还没有账号，去「账号与登录」加一个</div>`;
 
       return `<tr>
         <td><strong>${esc(g.name)}</strong></td>
@@ -250,14 +248,6 @@
         `<option value="${a.id}">${esc(a.name || a.phone || "账号" + a.id)}${a.authorized ? "" : "（未登录）"}</option>`
       ).join("");
       accSel.value = current;
-    }
-    const botSel = $("groupBotSelect");
-    if (botSel) {
-      const current = botSel.value;
-      botSel.innerHTML = `<option value="">默认机器人</option>` + state.bots.map((b) =>
-        `<option value="${b.id}">${esc(b.name || b.username || "机器人" + b.id)}${b.username ? "（@" + esc(b.username) + "）" : ""}</option>`
-      ).join("");
-      botSel.value = current;
     }
   }
 
@@ -1285,9 +1275,7 @@
     const form = $("groupForm");
     form.reset();
     form.elements.command.value = "签到";
-    form.elements.mode.value = "";
     form.elements.account_id.value = "";
-    form.elements.bot_id.value = "";
     state.editingGroupId = null;
     $("groupFormTitle").textContent = "添加群组";
     $("groupSubmitBtn").textContent = "添加群组";
@@ -1367,9 +1355,7 @@
         command: form.elements.command.value.trim() || "签到",
         schedule: form.elements.schedule.value,
         enabled: form.elements.enabled.value === "1",
-        mode: form.elements.mode.value || "",
         account_id: form.elements.account_id.value || null,
-        bot_id: form.elements.bot_id.value || null,
       };
       const editing = state.editingGroupId;
       try {

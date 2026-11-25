@@ -99,15 +99,8 @@
             <label class="field"><span>群组链接 / 用户名 / ID</span><input name="chat" placeholder="@mygroup 或 -1001234567890（机器人需已在群里）" required></label>
             <label class="field"><span>签到指令</span><input name="command" value="签到" placeholder="签到、/checkin 或自定义文本"></label>
             <label class="field"><span>启用状态</span><select name="enabled"><option value="1">启用</option><option value="0">暂停</option></select></label>
-            <label class="field"><span>签到方式</span>
-              <select name="mode">
-                <option value="">跟随全局设置</option>
-                <option value="user">用我的账号（Telethon）</option>
-                <option value="bot">用机器人（Bot API）</option>
-              </select>
-            </label>
-            <label class="field"><span>用哪个账号</span><select name="account_id" id="groupAccountSelect"><option value="">默认账号</option></select></label>
-            <label class="field"><span>用哪个机器人</span><select name="bot_id" id="groupBotSelect"><option value="">默认机器人</option></select></label>
+            <label class="field"><span>用哪个账号签到</span><select name="account_id" id="groupAccountSelect"><option value="">默认账号</option></select></label>
+            <p class="muted span-2" style="margin:0">签到一律用「账号与登录」里已登录的账号发消息——只有自己账号发的才算本人签到。没登录账号就先别加群，加了也签不了。</p>
             <div class="span-2" id="knownChatsBox" hidden>
               <span class="muted">机器人已经在这些群里，点一下自动填入：</span>
               <div class="presets" id="knownChatsList"></div>
@@ -222,7 +215,7 @@
             <label class="field"><span>随机延迟上限（秒）</span><input name="jitter" type="number" min="0" value="5"></label>
             <label class="field"><span>结果通知到会话</span><input name="notify_chat" placeholder="留空不通知，可填 @username 或自己的 ID"></label>
             <label class="field"><span>失败关键词（逗号分隔）</span><input name="fail_keywords" placeholder="例如：签到失败,未到时间"></label>
-            <label class="field"><span>谁来签到</span><select name="checkin_mode"><option value="bot">机器人（只要 Bot Token，推荐）</option><option value="user">自己的账号（需要 api_id）</option></select></label>
+            <label class="field"><span>谁来签到</span><input value="固定用已登录的账号" disabled></label>
             <label class="field"><span>模拟运行</span><select name="dry_run"><option value="0">关闭（真实发送）</option><option value="1">开启（不发送消息）</option></select></label>
             <label class="field"><span>面板密码（留空不修改）</span><input name="panel_password" type="password" placeholder="留空保持原密码"></label>
             <label class="field"><span>每日补签（上线即补）</span><select name="catchup_enabled"><option value="1">开启（推荐）</option><option value="0">关闭</option></select></label>
@@ -412,7 +405,7 @@
           </div>
           <div class="notice">
             <strong>机器人不需要 api_id</strong>
-            <p>走 Bot API，只用 BotFather 给的 token。可以接多个机器人，各自一条轮询线程、各自的群列表和秘书模式绑定，互不干扰。注意：机器人发消息不等于你本人签到；要算本人签到，请用「账号与登录」里的账号，并在群组里把签到方式选成「用我的账号」。</p>
+            <p>走 Bot API，只用 BotFather 给的 token。可以接多个机器人，各自一条轮询线程、各自的群列表和秘书模式绑定，互不干扰。注意：<b>签到跟机器人无关</b>，一律用「账号与登录」里已登录的账号发消息；机器人只负责聊天回复。</p>
           </div>
           <div class="table-wrap" style="margin-top:14px">
             <table>

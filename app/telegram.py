@@ -824,11 +824,12 @@ def _notify(text: str, group: dict[str, Any] | None = None) -> None:
 
 
 def _group_mode(group: dict[str, Any], cfg: dict[str, str]) -> str:
-    """群组自己选的签到方式优先，没选就按全局设置。"""
-    mode = str(group.get("mode") or "").strip().lower()
-    if mode in ("bot", "user"):
-        return mode
-    return (cfg.get("checkin_mode") or "bot").strip().lower()
+    """签到一律用已登录的账号（Telethon）。
+
+    历史上支持过「用机器人签到」，但机器人发的不算本人签到，容易白签。
+    现在统一成账号，函数保留是为了不动其它调用点的签名。
+    """
+    return "user"
 
 
 def execute_checkin(group_id: int, source: str = "auto") -> dict[str, Any]:
@@ -838,8 +839,24 @@ def execute_checkin(group_id: int, source: str = "auto") -> dict[str, Any]:
         return {"ok": False, "message": "群组不存在"}
 
     cfg = db.get_settings()
-    # 每个群可以单独选「用哪个账号 / 哪个机器人签到」，没选就跟随全局设置
+    # 签到只用账号：群里指定的账号 → 默认账号 → 老的单账号配置
     mode = _group_mode(group, cfg)
+    account = resolve_account(group)
+    if account is None:
+        note = "没有可用账号：先到「账号与登录」登录一个账号，再回来签到"
+        db.add_log(group_id, group["name"], source, "failed", note, 0)
+        return {
+            "ok": False,
+            "message": note,
+            "group_id": group_id,
+            "group_name": group["name"],
+            "source": source,
+            "mode": mode,
+            "mode_configured": mode,
+            "account": "",
+            "bot": "",
+            "duration": 0,
+        }
     try:
         retries = max(0, min(int(cfg.get("retry_count", "2")), 5))
         retry_delay = max(0, min(float(cfg.get("retry_delay", "10")), 300))
@@ -872,11 +889,9 @@ def execute_checkin(group_id: int, source: str = "auto") -> dict[str, Any]:
                 time.sleep(retry_delay)
         return None, last_error
 
-    # 主方式失败时，只要另一种方式的条件也具备，就自动补一次（比如账号没权限就换机器人发）
-    modes = [mode]
-    other = "bot" if mode == "user" else "user"
-    if (other == "bot" and resolve_bot_token(group)) or (other == "user" and resolve_account(group)):
-        modes.append(other)
+    # 现在只有一种方式：用已登录的账号发。以前还有「机器人代发」的备选，
+    # 但机器人发的消息不算本人签到，失败时反而让人以为签到了，所以去掉。
+    modes = ["user"]
 
     for which in modes:
         result, error = run_mode(which)

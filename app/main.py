@@ -228,7 +228,7 @@ def bootstrap(_: None = Depends(require_auth)) -> dict[str, Any]:
             "notify_chat": settings.get("notify_chat", ""),
             "fail_keywords": settings.get("fail_keywords", ""),
             "dry_run": settings.get("dry_run", "0"),
-            "checkin_mode": settings.get("checkin_mode", "bot"),
+            "checkin_mode": settings.get("checkin_mode", "user"),
             "catchup_enabled": settings.get("catchup_enabled", "1"),
             "catchup_interval": settings.get("catchup_interval", "600"),
             "catchup_cooldown": settings.get("catchup_cooldown", "1800"),
@@ -382,9 +382,10 @@ def _normalize_group(body: dict[str, Any]) -> dict[str, Any]:
         if not db.get_bot(bot_id):
             raise HTTPException(status_code=400, detail="指定的机器人不存在")
 
+    # 签到只用账号，机器人的选项已经去掉；老页面还传 bot 的话直接纠正成 user
     mode = str(body.get("mode", "") or "").strip().lower()
     if mode not in ("", "bot", "user"):
-        raise HTTPException(status_code=400, detail="签到方式只能是 默认 / bot / user")
+        raise HTTPException(status_code=400, detail="签到方式只能是 user（用账号签到）")
 
     return {
         "name": name or chat,
@@ -394,7 +395,7 @@ def _normalize_group(body: dict[str, Any]) -> dict[str, Any]:
         "enabled": bool(enabled),
         "account_id": account_id,
         "bot_id": bot_id,
-        "mode": mode,
+        "mode": "user",
     }
 
 
@@ -547,8 +548,9 @@ def update_settings(body: dict[str, Any], _: None = Depends(require_auth)) -> di
             continue  # 留空表示不修改
         if key == "bot_trigger" and value not in ("mention", "all", "private"):
             raise HTTPException(status_code=400, detail="bot_trigger 只能是 mention / all / private")
-        if key == "checkin_mode" and value not in ("bot", "user"):
-            raise HTTPException(status_code=400, detail="checkin_mode 只能是 bot / user")
+        if key == "checkin_mode":
+            # 签到只用账号，这个设置保留只为兼容老配置，传什么都收敛成 user
+            value = "user"
         if key == "webdav_dir":
             try:
                 value = backup.normalize_webdav_dir(value)

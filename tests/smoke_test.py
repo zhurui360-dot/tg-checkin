@@ -322,10 +322,10 @@ with TestClient(app) as client:
     assert client.get("/api/bot/status").json()["business"][0]["owner_name"] == "Owner"
     appdb.set_setting("business_connections", "")
 
-    # ---------- 群签到：默认走机器人（Bot API），不需要 api_id ----------
+    # ---------- 群签到：一律用已登录的账号，机器人不再参与 ----------
     from app import bot as appbot  # noqa: E402
     from app import telegram as apptg  # noqa: E402
-    assert appdb.get_setting("checkin_mode") == "bot"
+    assert appdb.get_setting("checkin_mode") == "user"
     assert appbot.normalize_chat("-1001234567890") == -1001234567890
     assert appbot.normalize_chat("https://t.me/mygroup") == "@mygroup"
     assert appbot.normalize_chat("@mygroup") == "@mygroup"
@@ -336,12 +336,11 @@ with TestClient(app) as client:
         raise AssertionError("邀请链接应当被拒绝")
     except appbot.BotError:
         pass
-
-    # 只接受 bot / user，别的一律 400
-    assert client.put("/api/settings", json={"checkin_mode": "bogus"}).status_code == 400
+    # 老页面还传 bot 也不会生效，一律收敛成 user
     assert client.put("/api/settings", json={"checkin_mode": "bot"}).status_code == 200
+    assert appdb.get_setting("checkin_mode") == "user"
 
-    # 没有 token 时点「立即签到」应写一条失败日志，而不是把面板打 500
+    # 没有登录账号时点「立即签到」应写一条失败日志，而不是把面板打 500 崩掉
     assert client.put("/api/settings", json={
         "retry_count": "0", "retry_delay": "0", "jitter": "0", "dry_run": "0",
     }).status_code == 200
@@ -354,23 +353,23 @@ with TestClient(app) as client:
     }).json()["id"]
     test_run = client.post(f"/api/groups/{g2}/test")
     assert test_run.status_code == 500, test_run.text
-    assert "Bot Token" in test_run.json()["detail"], test_run.text
+    assert "账号" in test_run.json()["detail"], test_run.text
     assert client.delete(f"/api/groups/{g2}").status_code == 200
 
-    # 切到账号模式时没有登录会话，同样只写失败日志
-    assert client.put("/api/settings", json={"checkin_mode": "user"}).status_code == 200
+    # 群组不再接受机器人签到选项，但老数据传 bot 会被纠正成 user
     g3 = client.post("/api/groups", json={
         "name": "账号签到群",
         "chat": "@user_checkin_group",
         "command": "/checkin",
         "schedule": ["0 8 * * *"],
         "enabled": True,
+        "mode": "bot",
     }).json()["id"]
+    assert [g for g in client.get("/api/groups").json()["groups"] if g["id"] == g3][0]["mode"] == "user"
     user_run = client.post(f"/api/groups/{g3}/test")
     assert user_run.status_code == 500, user_run.text
     assert "账号" in user_run.json()["detail"], user_run.text
     assert client.delete(f"/api/groups/{g3}").status_code == 200
-    assert client.put("/api/settings", json={"checkin_mode": "bot"}).status_code == 200
 
     # ---------- 扫码登录：接口形状与状态机 ----------
     assert client.get("/api/tg/qr/status").json()["status"] == "idle"
