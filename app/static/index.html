@@ -566,10 +566,11 @@
           <div class="card-head">
             <h3>AI 智能体</h3>
             <div class="filter-bar">
+              <span id="agentDefaultBadge" class="badge">默认：加载中…</span>
               <button id="agentNewBtn" class="btn small">新增智能体</button>
             </div>
           </div>
-          <p class="muted" style="margin:8px 0 14px">每个智能体可以有自己的名字、模型、接口和提示词，互不影响。机器人默认用带「默认」标签的那个，也可以单独指定。支持任何兼容 OpenAI <code>/chat/completions</code> 协议的服务：DeepSeek、硅基流动、Kimi、通义、one-api 中转等，base_url 填到 <code>/v1</code> 为止。</p>
+          <p class="muted" style="margin:8px 0 14px">每个智能体可以有自己的名字、模型、接口和提示词，互不影响。机器人没单独指定时，就用<b>带「默认」标记的那个</b>——想换默认，直接点那行的「设为默认」就行。支持任何兼容 OpenAI <code>/chat/completions</code> 协议的服务：DeepSeek、硅基流动、Kimi、通义、one-api 中转等，base_url 填到 <code>/v1</code> 为止。</p>
           <div class="table-wrap">
             <table>
               <thead><tr><th>名称</th><th>模型</th><th>接口</th><th>状态</th><th>操作</th></tr></thead>

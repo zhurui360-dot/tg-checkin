@@ -678,7 +678,11 @@ td.wrap { max-width: 440px; word-break: break-word; white-space: pre-wrap; }
 .badge.ok { background: var(--ok-bg); color: var(--ok); border-color: color-mix(in srgb, var(--ok) 22%, transparent); }
 .badge.err { background: var(--err-bg); color: var(--err); border-color: color-mix(in srgb, var(--err) 22%, transparent); }
 .badge.warn { background: var(--warn-bg); color: var(--warn); border-color: color-mix(in srgb, var(--warn) 22%, transparent); }
+.badge.default { background: var(--brand-soft); color: var(--brand); border-color: var(--brand-line); }
 .badge.ok::before { animation: pulse 2.4s ease-in-out infinite; }
+/* 智能体表格里「默认」那一行给个浅色底，一眼认出谁是默认 */
+tr.is-default > td { background: var(--brand-soft); }
+tr.is-default:hover > td { background: color-mix(in srgb, var(--brand-soft) 80%, var(--surface)); }
 @keyframes pulse {
   0%, 100% { opacity: .45; }
   50% { opacity: 1; }

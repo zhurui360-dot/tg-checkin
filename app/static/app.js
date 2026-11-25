@@ -517,6 +517,17 @@
   function renderAgents() {
     const tbody = $("agentTableBody");
     if (!tbody) return;
+    const def = defaultAgent();
+    const badge = $("agentDefaultBadge");
+    if (badge) {
+      if (def) {
+        badge.textContent = `默认：${def.name}`;
+        badge.className = "badge default";
+      } else {
+        badge.textContent = "默认：未设置";
+        badge.className = "badge warn";
+      }
+    }
     if (!state.agents.length) {
       tbody.innerHTML = `<tr><td colspan="5" class="empty">还没有智能体，点右上角「新增智能体」建一个，配上模型和 Key 就能用</td></tr>`;
     } else {
@@ -525,15 +536,15 @@
         const status = a.enabled
           ? a.key_set ? `<span class="badge ok">可用</span>` : `<span class="badge err">缺 Key</span>`
           : `<span class="badge">已关闭</span>`;
-        return `<tr>
-          <td><strong>${esc(a.name || "未命名")}</strong>${isDefault ? ` <span class="badge">默认</span>` : ""}</td>
+        return `<tr class="${isDefault ? "is-default" : ""}">
+          <td><strong>${esc(a.name || "未命名")}</strong>${isDefault ? ` <span class="badge default">默认</span>` : ""}</td>
           <td class="mono">${esc(a.model || "-")}</td>
           <td class="mono" title="${esc(a.base_url || "")}">${esc((a.base_url || "-").replace(/^https?:\/\//, ""))}</td>
           <td>${status}</td>
           <td><div class="row-actions">
             <button class="btn small" data-action="test" data-id="${a.id}">测试</button>
             <button class="btn small" data-action="edit" data-id="${a.id}">编辑</button>
-            ${isDefault ? "" : `<button class="btn small" data-action="default" data-id="${a.id}">设为默认</button>`}
+            ${isDefault ? `<span class="badge default" style="align-self:center">已是默认</span>` : `<button class="btn small primary" data-action="default" data-id="${a.id}">设为默认</button>`}
             <button class="btn small danger" data-action="delete" data-id="${a.id}">删除</button>
           </div></td>
         </tr>`;
