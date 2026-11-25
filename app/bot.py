@@ -233,6 +233,22 @@ def _agent_cfg(agent: dict[str, Any] | None) -> dict[str, str]:
     return cfg
 
 
+def _self_identity(agent: dict[str, Any] | None) -> str:
+    """机器人的自我认知：把名字写进系统提示，让模型记住并自称这个名字。
+
+    命名后模型才知道「我叫什么」，别人问起时能如实回答，而不是自称 AI 助手
+    或大模型。账号自动回复（bot_id=-1）是「以你本人身份说话」，不走这里。
+    """
+    name = str((agent or {}).get("name") or "").strip()
+    if not name or name in ("未命名智能体", "默认机器人"):
+        return ""
+    return (
+        f"你的名字叫「{name}」。"
+        "当别人问你是谁、你叫什么名字、你叫什么时，要如实回答这个名字，"
+        "不要自称 AI 助手、大模型、语言模型或任何其他身份。"
+    )
+
+
 def _ai_messages(
     chat_id: str,
     user_text: str,
@@ -246,6 +262,11 @@ def _ai_messages(
     cfg = _agent_cfg(agent)
     system = (cfg.get("ai_system_prompt") or "").strip()
     messages: list[dict[str, str]] = []
+    # 自我认知放最前，比人设提示词优先级更高：命名了就得一直记得自己叫什么
+    if bot_id != -1:
+        identity = _self_identity(agent)
+        if identity:
+            messages.append({"role": "system", "content": identity})
     if system:
         messages.append({"role": "system", "content": system})
 

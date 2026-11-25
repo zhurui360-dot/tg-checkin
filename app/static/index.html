@@ -573,7 +573,10 @@
             <span class="muted" id="agentFormHint">取个名字，配上模型和 Key 就能用</span>
           </div>
           <form id="agentForm" class="form-grid">
-            <label class="field"><span>名字</span><input name="name" placeholder="例如：闲聊小助手 / 客服机器人" required></label>
+            <label class="field span-2"><span>机器人名字</span>
+              <input name="name" placeholder="例如：小白、小助手（给它起个名字，它会记住并自称这个名字）" required>
+              <small class="muted">命名后机器人会一直记得自己叫什么：别人问「你是谁」「你叫什么」，它会如实回答这个名字，而不是自称 AI 助手或大模型。</small>
+            </label>
             <label class="field"><span>启用</span>
               <select name="enabled"><option value="1">开启</option><option value="0">关闭</option></select>
             </label>
@@ -604,7 +607,10 @@
               <p class="muted" id="agentModelHint" style="margin:0">填好接口地址和 Key 会自动去读这家接口的模型列表；想在同一家接口上用多个模型，勾选多个就行，保存时会一个模型建一个智能体。</p>
             </div>
             <label class="field span-2"><span>人设 / 系统提示词</span><textarea name="system_prompt" rows="3" placeholder="你是一个在 Telegram 群里聊天的助手，回答简洁、口语化…"></textarea></label>
-            <label class="field"><span>上下文条数</span><input name="history_len" type="number" min="0" max="40" placeholder="12"></label>
+            <label class="field"><span>上下文条数</span>
+              <input name="history_len" type="number" min="0" max="40" placeholder="12">
+              <small class="muted">带上最近这么多条对话去回答，条数越多越「记得」当前聊到哪，但也会占更多额度。</small>
+            </label>
             <label class="field"><span>最大回复长度</span><input name="max_tokens" type="number" min="64" max="4096" placeholder="800"></label>
             <label class="field"><span>温度（0-2）</span><input name="temperature" type="number" step="0.1" min="0" max="2" placeholder="0.7"></label>
             <label class="field"><span>最短回复间隔（秒）</span><input name="min_interval" type="number" step="1" min="0" max="60" placeholder="3"></label>
@@ -623,7 +629,7 @@
             <h3>智能体记忆</h3>
             <span class="muted" id="memorySummary">加载中…</span>
           </div>
-          <p class="muted" style="margin:8px 0 14px">「上下文条数」只是最近几条对话，滚出去就忘了。这里是<b>长期记忆</b>：聊天时自动提炼出称呼、身份、偏好、约定这类稳定信息，存进数据库，下次换个会话甚至隔几天再聊也还在。注入时按当前这句话挑最相关的几条，不会把整本笔记都塞给模型。</p>
+          <p class="muted" style="margin:8px 0 14px">机器人靠三样东西「记住」并给出相关联的回答：<b>名字</b>（上面填了就一直记得自己叫什么）、<b>上下文条数</b>（最近几条对话，记着当前聊到哪）、<b>长期记忆</b>（下面这些自动提炼的稳定信息，换会话、隔几天都还在）。注入时按当前这句话挑最相关的几条，不会把整本笔记都塞给模型。</p>
           <div class="form-grid">
             <label class="field"><span>记忆开关</span>
               <select name="memory_enabled" id="memoryEnabled"><option value="1">注入记忆</option><option value="0">不注入（保留但不使用）</option></select>

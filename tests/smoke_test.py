@@ -1023,4 +1023,16 @@ with TestClient(app) as client:
     assert "429" in _ab._rate_limit_hint("slow down")
     assert _ab._is_retryable(429) and _ab._is_retryable(503) and not _ab._is_retryable(401)
 
-print("冒烟测试通过：健康检查、鉴权、群组 CRUD、cron 校验、设置保存、AI 机器人、多智能体、机器人签到、扫码登录、多账号、多机器人、补签、备份恢复、GitHub 备份脱敏（凭据不上传/空值不回写）、WebDAV 自动建目录、GitHub 仓库诊断、安全加固（会话签名/限速/响应头/出网护栏）、长期记忆（注入/去重/作用域）、账号自动回复配置与处理记录、大模型接入（地址纠错/返回格式兼容/限流提示）均正常")
+    # ---------------- 机器人命名：自我认知注入 ----------------
+    # 命名后，系统提示里必须带上名字，让模型记住自己叫什么、被问起时如实回答
+    named = _ab._self_identity({"name": "小白"})
+    assert "小白" in named and "你叫什么" in named, named
+    # 没起名（空 / 默认占位）不注入，避免模型自称「未命名智能体」
+    assert _ab._self_identity(None) == ""
+    assert _ab._self_identity({}) == ""
+    assert _ab._self_identity({"name": "未命名智能体"}) == ""
+    assert _ab._self_identity({"name": "默认机器人"}) == ""
+    # 名字里带空白也要先剥干净
+    assert "小白" in _ab._self_identity({"name": "  小白  "})
+
+print("冒烟测试通过：健康检查、鉴权、群组 CRUD、cron 校验、设置保存、AI 机器人、多智能体、机器人签到、扫码登录、多账号、多机器人、补签、备份恢复、GitHub 备份脱敏（凭据不上传/空值不回写）、WebDAV 自动建目录、GitHub 仓库诊断、安全加固（会话签名/限速/响应头/出网护栏）、长期记忆（注入/去重/作用域）、账号自动回复配置与处理记录、大模型接入（地址纠错/返回格式兼容/限流提示）、机器人命名自我认知均正常")
